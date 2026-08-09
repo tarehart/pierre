@@ -256,4 +256,38 @@ describe('computeWindowedDiffRows', () => {
       computeWindowedDiffRows({ diff: partial, window: { start: 1, end: 5 } })
     ).toThrow(/non-partial/);
   });
+
+  test('split style keeps a paired change as a single row', () => {
+    const diff = makeDiff();
+    const split = computeWindowedDiffRows({
+      diff,
+      diffStyle: 'split',
+      window: { start: 25, end: 35 },
+      collapsedContextThreshold: 50,
+    });
+    // The line-30 change renders once in split (both sides on one row) versus
+    // twice in unified.
+    const splitChangeRows = split.rows.filter(
+      (row) => row.kind === 'line' && row.row.type === 'change'
+    );
+    expect(splitChangeRows).toHaveLength(1);
+
+    const unified = computeWindowedDiffRows({
+      diff,
+      diffStyle: 'unified',
+      window: { start: 25, end: 35 },
+      collapsedContextThreshold: 50,
+    });
+    const unifiedChangeRows = unified.rows.filter(
+      (row) => row.kind === 'line' && row.row.type === 'change'
+    );
+    expect(unifiedChangeRows).toHaveLength(2);
+
+    // Same window folds either way: the line-5 change is above, line-30 kept.
+    expect(visibleNewLines(split)).toContain(30);
+    expect(visibleNewLines(split)).not.toContain(5);
+    expect(
+      separators(split).find((s) => s.boundary === 'above')?.containsChanges
+    ).toBe(true);
+  });
 });

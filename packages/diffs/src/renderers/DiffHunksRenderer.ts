@@ -1529,10 +1529,9 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     const isRenderCacheDirty = this.renderCache?.isDirty ?? false;
 
     const unified = diffStyle === 'unified';
-    // Windowed mode renders unified only (the inline-snippet use case); fall
-    // back to the normal whole-file walk for split even if a window is set.
-    const windowState =
-      unified && this.windowState != null ? this.windowState : undefined;
+    // Windowing applies to both unified and split; the windowed row stream is
+    // flattened in the active style.
+    const windowState = this.windowState;
     const canHydrateContext = canHydrateCollapsedContext(
       fileDiff,
       this.options.loadDiffFiles != null
@@ -2057,6 +2056,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       iterateWindowedDiff({
         diff: fileDiff,
         window: windowState.window,
+        diffStyle,
         collapsedContextThreshold,
         expansionBounds: windowState.expansionBounds,
         reveal: windowState.reveal,

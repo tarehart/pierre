@@ -49,6 +49,13 @@ export interface ComputeWindowedDiffRowsProps {
   diff: FileDiffMetadata;
   window: DiffWindow;
   /**
+   * Row space to flatten into. `'unified'` (default) emits a paired change as
+   * two rows (deletion then addition); `'split'` emits it as one row carrying
+   * both sides. Windowing is otherwise identical: the folds are the same
+   * new-line ranges, just cut over a different row stream.
+   */
+  diffStyle?: 'unified' | 'split';
+  /**
    * Long unchanged runs *inside* the window collapse when they exceed this many
    * lines. Runs at or below it stay expanded so a couple of context lines are
    * never hidden behind a separator. Defaults to
@@ -144,6 +151,7 @@ interface FlatRow {
 export function computeWindowedDiffRows({
   diff,
   window,
+  diffStyle = 'unified',
   collapsedContextThreshold = DEFAULT_COLLAPSED_CONTEXT_THRESHOLD,
   expansionBounds = 'file',
   reveal = createEmptyReveal(),
@@ -158,11 +166,12 @@ export function computeWindowedDiffRows({
 
   // 1. Flatten the fully-expanded diff into a flat, in-order row list. With
   //    `expandedHunks: true` the iterator emits every line of the file exactly
-  //    once, in new-file order, with correct line numbers on each side.
+  //    once, in order, with correct line numbers on each side. In split style a
+  //    paired change is one row (both sides); in unified it is two rows.
   const flat: FlatRow[] = [];
   iterateOverDiff({
     diff,
-    diffStyle: 'unified',
+    diffStyle,
     expandedHunks: true,
     callback: (row) => {
       flat.push({

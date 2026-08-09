@@ -80,8 +80,9 @@ function getWindowedHunksRendererOptions<LAnnotation>(
 ): DiffHunksRendererOptions {
   return {
     ...options,
-    // Windowing is a unified-only concern for now.
-    diffStyle: 'unified',
+    // Windowing supports both unified and split; default to unified when the
+    // caller does not specify a style.
+    diffStyle: options?.diffStyle ?? 'unified',
     useTokenTransformer: shouldUseTokenTransformer<'diff'>(options),
     headerRenderMode:
       options?.renderCustomHeader != null ? 'custom' : 'default',

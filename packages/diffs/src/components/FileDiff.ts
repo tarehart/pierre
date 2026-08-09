@@ -179,7 +179,8 @@ export interface FileDiffOptions<LAnnotation>
   /**
    * Render this diff as a windowed snippet: show only the given new-file line
    * range expanded and fold everything else behind expandable boundary/interior
-   * separators. Requires a non-partial diff (both blobs). Unified style only.
+   * separators. Requires a non-partial diff (both blobs). Works in both
+   * unified and split diff styles.
    */
   window?: DiffWindow;
   /**

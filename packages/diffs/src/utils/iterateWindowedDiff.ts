@@ -51,6 +51,7 @@ export type WindowedDiffLineCallbackProps = DiffLineCallbackProps &
 export interface IterateWindowedDiffProps {
   diff: FileDiffMetadata;
   window: DiffWindow;
+  diffStyle?: 'unified' | 'split';
   collapsedContextThreshold?: number;
   expansionBounds?: WindowExpansionBounds;
   reveal?: WindowReveal;
@@ -78,12 +79,15 @@ export interface IterateWindowedDiffProps {
  * grid, while content indices (`lineIndex`) and gutter line numbers keep their
  * original full-file values so each row still resolves to the right source line.
  *
- * Unified diff style only. Split windowing would flatten in split row space;
- * the inline narrative snippets this targets are unified.
+ * Works for both unified and split: the model flattens in the active style, and
+ * densification advances the split axis one slot per emitted row while the
+ * unified axis advances by the row's unified footprint (2 for a split paired
+ * change), keeping both sides' data-line-index keys distinct.
  */
 export function iterateWindowedDiff({
   diff,
   window,
+  diffStyle = 'unified',
   collapsedContextThreshold,
   expansionBounds,
   reveal,
@@ -93,6 +97,7 @@ export function iterateWindowedDiff({
   const model = computeWindowedDiffRows({
     diff,
     window,
+    diffStyle,
     collapsedContextThreshold,
     expansionBounds,
     reveal,
@@ -112,7 +117,14 @@ export function iterateWindowedDiff({
   // Folds after the last kept row (there can be more than one when a reveal
   // hides the rows between them). Rendered as the trailing separators.
   let trailing: WindowSeparatorSpec[] = [];
-  let denseIndex = 0;
+  // Dense row positions. `splitLineIndex` advances one per emitted row (the
+  // renderer positions split rows on it). `unifiedLineIndex` advances by the
+  // row's unified footprint — 2 for a split paired change (which unified would
+  // show as two rows), 1 otherwise — so the two sides of a paired change keep
+  // distinct `${unifiedLineIndex},${splitLineIndex}` keys and their
+  // data-line-index attributes never collide.
+  let denseSplit = 0;
+  let denseUnified = 0;
 
   const makeSpec = (
     row: Extract<WindowedDiffResult['rows'][number], { kind: 'separator' }>
@@ -138,11 +150,18 @@ export function iterateWindowedDiff({
       trailing.push(spec);
       continue;
     }
+    // A paired split change carries both sides on one row; its two sides sit at
+    // consecutive unified indexes. Every other row is a single unified slot.
+    const isPairedChange =
+      row.row.type === 'change' &&
+      row.row.deletionLine != null &&
+      row.row.additionLine != null;
     pending.push({
-      props: redensify(row.row, denseIndex),
+      props: redensify(row.row, denseSplit, denseUnified),
       before: pendingBefore,
     });
-    denseIndex += 1;
+    denseSplit += 1;
+    denseUnified += isPairedChange ? 2 : 1;
     pendingBefore = [];
     // A kept row followed these folds, so they are not the trailing ones.
     trailing = [];
@@ -177,29 +196,35 @@ export function iterateWindowedDiff({
   // empty diff. This matches the pre-existing empty-window behavior.
 }
 
-// Rewrite a captured row's rendered-row positions to a dense value while
-// preserving its content index and gutter line number.
+// Rewrite a captured row's rendered-row positions to dense values while
+// preserving its content index and gutter line number. Both sides share the
+// row's dense split slot; the addition side of a paired change takes the next
+// dense unified slot so the two sides keep distinct data-line-index keys.
 function redensify(
   props: DiffLineCallbackProps,
-  denseIndex: number
+  denseSplit: number,
+  denseUnified: number
 ): DiffLineCallbackProps {
+  const hasBothSides = props.deletionLine != null && props.additionLine != null;
+  const additionUnified = hasBothSides ? denseUnified + 1 : denseUnified;
   return {
     ...props,
-    deletionLine: densifyLine(props.deletionLine, denseIndex),
-    additionLine: densifyLine(props.additionLine, denseIndex),
+    deletionLine: densifyLine(props.deletionLine, denseSplit, denseUnified),
+    additionLine: densifyLine(props.additionLine, denseSplit, additionUnified),
   } as DiffLineCallbackProps;
 }
 
 function densifyLine(
   line: DiffLineMetadata | undefined,
-  denseIndex: number
+  denseSplit: number,
+  denseUnified: number
 ): DiffLineMetadata | undefined {
   if (line == null) {
     return undefined;
   }
   return {
     ...line,
-    unifiedLineIndex: denseIndex,
-    splitLineIndex: denseIndex,
+    unifiedLineIndex: denseUnified,
+    splitLineIndex: denseSplit,
   };
 }

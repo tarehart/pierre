@@ -151,4 +151,49 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
       cleanup();
     }
   });
+
+  test('split style windows with aligned columns and reveals on expand', async () => {
+    const { cleanup } = installDom();
+    let instance: FileDiff<string> | undefined;
+    try {
+      const fileContainer = document.createElement('div');
+      instance = new FileDiff<string>({
+        disableFileHeader: true,
+        diffStyle: 'split',
+        hunkSeparators: 'line-info',
+        window: { start: 25, end: 35 },
+        collapsedContextThreshold: 50,
+      });
+      instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
+      await waitForRenderedCode(fileContainer);
+
+      const lines = renderedLineNumbers(fileContainer);
+      expect(lines).toContain(30);
+      expect(lines).not.toContain(5);
+      expect(expandSeparators(fileContainer).length).toBeGreaterThan(0);
+
+      // Split renders two code columns; windowed folds must keep them the same
+      // height, otherwise the deletion/addition sides drift out of alignment.
+      const columns = Array.from(
+        fileContainer.shadowRoot?.querySelectorAll('[data-code]') ?? []
+      );
+      expect(columns).toHaveLength(2);
+      const rowCounts = columns.map(
+        (col) => col.querySelectorAll('[data-line-index]').length
+      );
+      expect(rowCounts[0]).toBe(rowCounts[1]);
+
+      // Expanding the above fold reveals context toward the window.
+      const firstIndex = Number.parseInt(
+        expandSeparators(fileContainer)[0].getAttribute('data-expand-index')!,
+        10
+      );
+      instance.expandHunk(firstIndex, 'down', 3);
+      await waitForRenderedCode(fileContainer);
+      expect(renderedLineNumbers(fileContainer)).toContain(24);
+    } finally {
+      instance?.cleanUp();
+      cleanup();
+    }
+  });
 });

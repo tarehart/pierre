@@ -86,6 +86,12 @@ import {
   cloneFileDiffMetadata,
   cloneHunks,
 } from '../utils/cloneFileDiffMetadata';
+import {
+  createEmptyReveal,
+  type DiffWindow,
+  type WindowExpansionBounds,
+  type WindowReveal,
+} from '../utils/computeWindowedDiffRows';
 import { createAnnotationWrapperNode } from '../utils/createAnnotationWrapperNode';
 import { createGutterUtilityContentNode } from '../utils/createGutterUtilityContentNode';
 import { createUnsafeCSSStyleNode } from '../utils/createUnsafeCSSStyleNode';
@@ -274,6 +280,18 @@ export interface FileDiffOptions<LAnnotation, Caret>
         instance: FileDiff<LAnnotation, Caret>
       ) => HTMLElement | DocumentFragment | null | undefined);
   disableFileHeader?: boolean;
+  /**
+   * Render this diff as a windowed snippet: show only the given new-file line
+   * range expanded and fold everything else behind expandable boundary/interior
+   * separators. Requires a non-partial diff (both blobs). Unified style only.
+   */
+  window?: DiffWindow;
+  /**
+   * Whether windowed folds may expand past the window edge into the file
+   * (`'file'`, default) or stop at the window edge (`'window'`). Ignored unless
+   * `window` is set.
+   */
+  windowExpansionBounds?: WindowExpansionBounds;
   renderHeaderPrefix?: RenderHeaderPrefixCallback;
   renderHeaderFilenameSuffix?: RenderHeaderFilenameSuffixCallback;
   renderHeaderMetadata?: RenderHeaderMetadataCallback;
@@ -449,6 +467,12 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
   protected deferredSelectedLines: DeferredSelectedLinesWrite | undefined;
   protected deferredEditorActiveLine: DeferredEditorActiveLineWrite | undefined;
 
+  // Reader-driven windowed-fold reveals. Owned here (not in options) so it
+  // survives option updates and re-renders; reset only when the window itself
+  // changes. Undefined while not windowed.
+  private windowReveal: WindowReveal | undefined;
+  private appliedWindowKey: string | undefined;
+
   constructor(
     public options: FileDiffOptions<LAnnotation, Caret> = {
       theme: DEFAULT_THEMES,
@@ -457,6 +481,7 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
     protected isContainerManaged = false
   ) {
     this.hunksRenderer = this.createHunksRenderer(options);
+    this.syncWindowState();
     this.resizeManager = new ResizeManager();
     this.scrollSyncManager = new ScrollSyncManager();
     this.interactionManager = new InteractionManager(
@@ -617,7 +642,35 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
     this.options = options;
     this.clearReusableHeader();
     this.hunksRenderer.setOptions(this.getHunksRendererOptions(options));
+    this.syncWindowState();
     this.syncInteractionOptions();
+  }
+
+  // Push the current `window`/`windowExpansionBounds` options onto the renderer
+  // as windowed-render state, preserving the reader's fold reveals across
+  // option updates. The reveal is reset only when the window range itself
+  // changes (a new snippet), matching how a fresh diff clears expansion.
+  private syncWindowState(): void {
+    const { window, windowExpansionBounds } = this.options;
+    if (window == null) {
+      if (this.appliedWindowKey !== undefined) {
+        this.windowReveal = undefined;
+        this.appliedWindowKey = undefined;
+        this.hunksRenderer.setWindowState(undefined);
+      }
+      return;
+    }
+    const key = `${window.start}:${window.end}:${windowExpansionBounds ?? 'file'}`;
+    if (key !== this.appliedWindowKey) {
+      this.windowReveal = createEmptyReveal();
+      this.appliedWindowKey = key;
+    }
+    this.windowReveal ??= createEmptyReveal();
+    this.hunksRenderer.setWindowState({
+      window,
+      expansionBounds: windowExpansionBounds ?? 'file',
+      reveal: this.windowReveal,
+    });
   }
 
   protected syncInteractionOptions(): void {
@@ -1169,6 +1222,20 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
     direction: ExpansionDirections,
     expansionLineCountOverride?: number
   ): void => {
+    // In windowed mode the clicked separator's `data-expand-index` is a fold
+    // index, not a hunk index; route it to the fold's reveal. `hunkIndex` is
+    // the index the renderer emitted for this separator.
+    if (
+      this.options.window != null &&
+      this.hunksRenderer.expandWindowByIndex(
+        hunkIndex,
+        direction,
+        expansionLineCountOverride
+      )
+    ) {
+      this.rerender();
+      return;
+    }
     this.hunksRenderer.expandHunk(
       hunkIndex,
       direction,

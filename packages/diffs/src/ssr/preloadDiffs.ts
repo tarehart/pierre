@@ -40,7 +40,15 @@ export type PreloadDiffOptions<LAnnotation, Caret> = PreloadDiffBaseOptions<
   (
     | ({ fileDiff: FileDiffMetadata } & MaybeDiffFileInput)
     | ({ fileDiff?: undefined } & DiffFileInput)
-  );
+  ) & {
+    /**
+     * A pre-configured renderer to render with instead of constructing one
+     * from `options`. Used by `renderWindowedDiffHTML`, which must set the
+     * renderer's window state before rendering; the wrap/serialize path is
+     * otherwise identical.
+     */
+    renderer?: DiffHunksRenderer<LAnnotation>;
+  };
 
 export async function preloadDiffHTML<
   LAnnotation = undefined,
@@ -51,6 +59,7 @@ export async function preloadDiffHTML<
   newFile,
   options,
   annotations,
+  renderer: providedRenderer,
 }: PreloadDiffOptions<LAnnotation, Caret>): Promise<string> {
   const fileInput = getDiffFileInput({ oldFile, newFile }, 'preloadDiffHTML');
   if (fileDiff == null && fileInput != null) {
@@ -65,10 +74,14 @@ export async function preloadDiffHTML<
       'preloadFileDiff: You must pass at least a fileDiff, oldFile, or newFile prop'
     );
   }
-  const renderer = new DiffHunksRenderer<LAnnotation>(
-    getHunksRendererOptions(options)
-  );
-  if (annotations != null && annotations.length > 0) {
+  const renderer =
+    providedRenderer ??
+    new DiffHunksRenderer<LAnnotation>(getHunksRendererOptions(options));
+  if (
+    providedRenderer == null &&
+    annotations != null &&
+    annotations.length > 0
+  ) {
     renderer.setLineAnnotations(annotations);
   }
   return renderHTML(

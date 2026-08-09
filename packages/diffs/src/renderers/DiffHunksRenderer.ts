@@ -45,6 +45,14 @@ import { areDiffRenderOptionsEqual } from '../utils/areDiffRenderOptionsEqual';
 import { areDiffTargetsEqual } from '../utils/areDiffTargetsEqual';
 import { areRenderRangesEqual } from '../utils/areRenderRangesEqual';
 import { cleanLastNewline } from '../utils/cleanLastNewline';
+import {
+  type DiffWindow,
+  WINDOW_ABOVE_ID,
+  WINDOW_BELOW_ID,
+  type WindowedDiffResult,
+  type WindowExpansionBounds,
+  type WindowReveal,
+} from '../utils/computeWindowedDiffRows';
 import { createAnnotationElement as createDefaultAnnotationElement } from '../utils/createAnnotationElement';
 import { createContentColumn } from '../utils/createContentColumn';
 import { createEmptyRowBuffer } from '../utils/createEmptyRowBuffer';
@@ -77,8 +85,16 @@ import {
 } from '../utils/includesFileAnnotations';
 import { isDefaultRenderRange } from '../utils/isDefaultRenderRange';
 import { isDiffPlainText } from '../utils/isDiffPlainText';
-import type { DiffLineMetadata } from '../utils/iterateOverDiff';
+import type {
+  DiffLineCallback,
+  DiffLineMetadata,
+} from '../utils/iterateOverDiff';
 import { iterateOverDiff } from '../utils/iterateOverDiff';
+import {
+  iterateWindowedDiff,
+  type WindowedDiffLineCallbackProps,
+  type WindowSeparatorSpec,
+} from '../utils/iterateWindowedDiff';
 import { renderDiffWithHighlighter } from '../utils/renderDiffWithHighlighter';
 import {
   recomputeDiffHunksForEdit,
@@ -148,6 +164,17 @@ interface ProcessContext {
 
 export interface DiffHunksRendererOptions extends BaseDiffOptions {
   headerRenderMode?: FileHeaderRenderMode;
+}
+
+/**
+ * Windowing state for the renderer: the requested display window plus the
+ * reader's accumulated reveals. Present only when the diff is being rendered as
+ * a windowed snippet (`renderWindowedDiff` / the `window` component option).
+ */
+export interface DiffWindowRenderState {
+  window: DiffWindow;
+  reveal: WindowReveal;
+  expansionBounds: WindowExpansionBounds;
 }
 
 export interface DiffHunksRendererOptionsWithDefaults extends Omit<
@@ -245,6 +272,15 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
   private diff: FileDiffMetadata | undefined;
 
   private expandedHunks = new Map<number, HunkExpansionRegion>();
+
+  // Windowed-snippet state. When set, `processDiffResult` renders only the
+  // window's rows and folds everything else into expandable boundary/interior
+  // separators, instead of the whole-file walk. Null for normal diffs.
+  private windowState: DiffWindowRenderState | undefined;
+  private lastWindowModel: WindowedDiffResult | undefined;
+  // Maps each windowed separator's `data-expand-index` to its stable fold id,
+  // so an expansion click (which arrives as an index) routes to the right fold.
+  private windowExpandIndexToFoldId = new Map<number, string>();
 
   private deletionAnnotations: AnnotationLineMap<LAnnotation> = {};
   private additionAnnotations: AnnotationLineMap<LAnnotation> = {};
@@ -523,6 +559,78 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     expandedHunks: Map<number, HunkExpansionRegion>
   ): void {
     this.expandedHunks = expandedHunks;
+  }
+
+  /**
+   * Put the renderer into windowed mode (or update the window). Clears the
+   * render cache so the next render rebuilds against the new window. Pass
+   * `undefined` to leave windowed mode and render the whole diff again.
+   */
+  public setWindowState(windowState: DiffWindowRenderState | undefined): void {
+    this.windowState = windowState;
+    this.clearRenderCache();
+  }
+
+  public getWindowState(): DiffWindowRenderState | undefined {
+    return this.windowState;
+  }
+
+  /** The windowed model from the most recent render, for host separator wiring. */
+  public getWindowModel(): WindowedDiffResult | undefined {
+    return this.lastWindowModel;
+  }
+
+  /**
+   * Reveal `lineCount` lines out of a windowed separator, mirroring
+   * `expandHunk` for the whole-file path. `id` is the separator's stable id
+   * (`WINDOW_ABOVE_ID`, `WINDOW_BELOW_ID`, or an `interior:<n>` id). Grows the
+   * reveal state and clears the render cache so the next render shows them.
+   */
+  public expandWindowSeparator(
+    id: string,
+    direction: ExpansionDirections,
+    lineCount: number = this.getOptionsWithDefaults().expansionLineCount
+  ): void {
+    if (this.windowState == null) {
+      return;
+    }
+    const reveal = this.windowState.reveal;
+    const region = reveal.get(id) ?? { fromStart: 0, fromEnd: 0 };
+    // The above-window fold only opens downward (toward the window) and the
+    // below-window fold only opens upward, so a plain click on either peels
+    // from the correct edge regardless of the reported direction.
+    const towardStart =
+      direction === 'up' || direction === 'both' || id === WINDOW_BELOW_ID;
+    const towardEnd =
+      direction === 'down' || direction === 'both' || id === WINDOW_ABOVE_ID;
+    if (towardStart) {
+      region.fromStart += lineCount;
+    }
+    if (towardEnd) {
+      region.fromEnd += lineCount;
+    }
+    reveal.set(id, region);
+    this.clearRenderCache();
+  }
+
+  /**
+   * Route an expansion click that arrived as a rendered `expandIndex` (the
+   * separator's `data-expand-index`) to the fold it belongs to. Returns true
+   * when the index mapped to a windowed fold and the reveal was applied, so the
+   * host can tell a windowed expansion from a whole-file one. The index→foldId
+   * map is rebuilt every render, so callers pass the index from the current DOM.
+   */
+  public expandWindowByIndex(
+    expandIndex: number,
+    direction: ExpansionDirections,
+    lineCount?: number
+  ): boolean {
+    const foldId = this.windowExpandIndexToFoldId.get(expandIndex);
+    if (foldId == null) {
+      return false;
+    }
+    this.expandWindowSeparator(foldId, direction, lineCount);
+    return true;
   }
 
   public setLineAnnotations(
@@ -1421,11 +1529,18 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     const isRenderCacheDirty = this.renderCache?.isDirty ?? false;
 
     const unified = diffStyle === 'unified';
+    // Windowed mode renders unified only (the inline-snippet use case); fall
+    // back to the normal whole-file walk for split even if a window is set.
+    const windowState =
+      unified && this.windowState != null ? this.windowState : undefined;
     const canHydrateContext = canHydrateCollapsedContext(
       fileDiff,
       this.options.loadDiffFiles != null
     );
-    const isExpandableDiff = !fileDiff.isPartial || canHydrateContext;
+    // A windowed diff is always non-partial (blobs in), so its separators are
+    // expandable by construction — no hydration involved.
+    const isExpandableDiff =
+      windowState != null || !fileDiff.isPartial || canHydrateContext;
 
     let additionsContentAST: ElementContent[] | undefined = [];
     let deletionsContentAST: ElementContent[] | undefined = [];
@@ -1464,10 +1579,16 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         }
       },
     };
-    const trailingRangeSize = getTrailingContextRangeSize({
-      fileDiff,
-      errorPrefix: 'DiffHunksRenderer.processDiffResult',
-    });
+    // In windowed mode the below-window fold owns the trailing collapse, routed
+    // through the callback's `collapsedAfter`; the whole-file trailing measure
+    // does not apply.
+    const trailingRangeSize =
+      windowState != null
+        ? 0
+        : getTrailingContextRangeSize({
+            fileDiff,
+            errorPrefix: 'DiffHunksRenderer.processDiffResult',
+          });
     const pendingSplitContext: PendingSplitContext = {
       size: 0,
       side: undefined,
@@ -1524,16 +1645,27 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       }
     }
 
+    // Windowed folds carry their own unique expand index (the whole-file
+    // path's index arithmetic does not apply), so they are pushed from an
+    // explicit spec rather than the collapsedBefore/After counters. The
+    // expand-arrow direction comes from the fold's own canExpandUp/Down
+    // (`isFirstHunk` suppresses the up arrow, `isLastHunk` the down arrow).
+    function pushWindowSeparator(spec: WindowSeparatorSpec) {
+      pushSeparators({
+        hunkIndex: spec.expandIndex,
+        collapsedLines: spec.collapsedLines,
+        rangeSize: spec.rangeSize,
+        hunkSpecs: undefined,
+        isFirstHunk: !spec.canExpandUp,
+        isLastHunk: !spec.canExpandDown,
+        isExpandable: true,
+      });
+    }
+
     this.pushFileLevelAnnotations(fileDiff, diffStyle, renderRange, context);
 
-    iterateOverDiff({
-      diff: fileDiff,
-      diffStyle,
-      startingLine: renderRange.startingLine,
-      totalLines: renderRange.totalLines,
-      expandedHunks: expandUnchanged ? true : this.expandedHunks,
-      collapsedContextThreshold,
-      callback: ({
+    const diffRowCallback: DiffLineCallback = (props) => {
+      const {
         hunkIndex,
         hunk,
         collapsedBefore,
@@ -1541,370 +1673,410 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         additionLine,
         deletionLine,
         type,
-      }) => {
-        const splitLineIndex =
-          deletionLine != null
-            ? deletionLine.splitLineIndex
-            : additionLine.splitLineIndex;
-        const unifiedLineIndex =
-          additionLine != null
-            ? additionLine.unifiedLineIndex
-            : deletionLine.unifiedLineIndex;
+      } = props;
+      const windowSeparatorsBefore = (props as WindowedDiffLineCallbackProps)
+        .__windowSeparatorsBefore;
+      const windowSeparatorsAfter = (props as WindowedDiffLineCallbackProps)
+        .__windowSeparatorsAfter;
+      const splitLineIndex =
+        deletionLine != null
+          ? deletionLine.splitLineIndex
+          : additionLine.splitLineIndex;
+      const unifiedLineIndex =
+        additionLine != null
+          ? additionLine.unifiedLineIndex
+          : deletionLine.unifiedLineIndex;
 
-        if (diffStyle === 'split' && type !== 'change') {
-          pendingSplitContext.flush();
+      if (diffStyle === 'split' && type !== 'change') {
+        pendingSplitContext.flush();
+      }
+
+      if (windowSeparatorsBefore != null) {
+        for (const spec of windowSeparatorsBefore) {
+          pushWindowSeparator(spec);
         }
-
-        if (collapsedBefore > 0) {
-          pushSeparators({
-            hunkIndex,
-            collapsedLines: collapsedBefore,
-            rangeSize: Math.max(hunk?.collapsedBefore ?? 0, 0),
-            hunkSpecs: hunk?.hunkSpecs,
-            isFirstHunk: hunkIndex === 0,
-            isLastHunk: false,
-            isExpandable: isExpandableDiff,
-          });
-        }
-
-        const lineIndex =
-          diffStyle === 'unified' ? unifiedLineIndex : splitLineIndex;
-        const renderedLineContext: RenderedLineContext = {
-          type,
+      } else if (collapsedBefore > 0) {
+        pushSeparators({
           hunkIndex,
-          lineIndex,
-          unifiedLineIndex,
-          splitLineIndex,
-          deletionLine,
-          additionLine,
-        };
+          collapsedLines: collapsedBefore,
+          rangeSize: Math.max(hunk?.collapsedBefore ?? 0, 0),
+          hunkSpecs: hunk?.hunkSpecs,
+          isFirstHunk: hunkIndex === 0,
+          isLastHunk: false,
+          isExpandable: isExpandableDiff,
+        });
+      }
 
-        if (diffStyle === 'unified') {
-          const injectedRows =
-            this.getUnifiedInjectedRowsForLine?.(renderedLineContext);
-          if (injectedRows?.before != null) {
-            pushUnifiedInjectedRows(injectedRows.before, context);
-          }
-          let deletionLineContent =
-            deletionLine != null
-              ? deletionLines[deletionLine.lineIndex]
-              : undefined;
-          let additionLineContent =
-            additionLine != null
-              ? additionLines[additionLine.lineIndex]
-              : undefined;
-          if (deletionLineContent == null && additionLineContent == null) {
-            const errorMessage =
-              'DiffHunksRenderer.processDiffResult: deletionLine and additionLine are null, something is wrong';
-            console.error(errorMessage, { file: fileDiff.name });
-            throw new Error(errorMessage);
-          }
-          const lineType =
-            type === 'change'
-              ? additionLine != null
-                ? 'change-addition'
-                : 'change-deletion'
-              : type;
-          const lineDecoration = this.getUnifiedLineDecoration({
-            // NOTE: This function gets extended so don't remove
-            // these extra props
-            type,
-            lineType,
-            additionLineIndex: additionLine?.lineIndex,
-            deletionLineIndex: deletionLine?.lineIndex,
-          });
-          pushGutterLineNumber(
-            'unified',
-            lineDecoration.gutterLineType,
-            additionLine != null
-              ? additionLine.lineNumber
-              : deletionLine.lineNumber,
-            `${unifiedLineIndex},${splitLineIndex}`,
-            lineDecoration.gutterProperties
+      const lineIndex =
+        diffStyle === 'unified' ? unifiedLineIndex : splitLineIndex;
+      const renderedLineContext: RenderedLineContext = {
+        type,
+        hunkIndex,
+        lineIndex,
+        unifiedLineIndex,
+        splitLineIndex,
+        deletionLine,
+        additionLine,
+      };
+
+      if (diffStyle === 'unified') {
+        const injectedRows =
+          this.getUnifiedInjectedRowsForLine?.(renderedLineContext);
+        if (injectedRows?.before != null) {
+          pushUnifiedInjectedRows(injectedRows.before, context);
+        }
+        let deletionLineContent =
+          deletionLine != null
+            ? deletionLines[deletionLine.lineIndex]
+            : undefined;
+        let additionLineContent =
+          additionLine != null
+            ? additionLines[additionLine.lineIndex]
+            : undefined;
+        if (deletionLineContent == null && additionLineContent == null) {
+          const errorMessage =
+            'DiffHunksRenderer.processDiffResult: deletionLine and additionLine are null, something is wrong';
+          console.error(errorMessage, { file: fileDiff.name });
+          throw new Error(errorMessage);
+        }
+        const lineType =
+          type === 'change'
+            ? additionLine != null
+              ? 'change-addition'
+              : 'change-deletion'
+            : type;
+        const lineDecoration = this.getUnifiedLineDecoration({
+          // NOTE: This function gets extended so don't remove
+          // these extra props
+          type,
+          lineType,
+          additionLineIndex: additionLine?.lineIndex,
+          deletionLineIndex: deletionLine?.lineIndex,
+        });
+        pushGutterLineNumber(
+          'unified',
+          lineDecoration.gutterLineType,
+          additionLine != null
+            ? additionLine.lineNumber
+            : deletionLine.lineNumber,
+          `${unifiedLineIndex},${splitLineIndex}`,
+          lineDecoration.gutterProperties
+        );
+        if (additionLineContent != null) {
+          additionLineContent = withContentProperties(
+            additionLineContent,
+            lineDecoration.contentProperties,
+            isRenderCacheDirty && additionLine != null
+              ? {
+                  'data-line': additionLine.lineNumber,
+                  'data-line-index': `${unifiedLineIndex},${splitLineIndex}`,
+                }
+              : undefined
           );
-          if (additionLineContent != null) {
-            additionLineContent = withContentProperties(
-              additionLineContent,
-              lineDecoration.contentProperties,
-              isRenderCacheDirty && additionLine != null
-                ? {
-                    'data-line': additionLine.lineNumber,
-                    'data-line-index': `${unifiedLineIndex},${splitLineIndex}`,
-                  }
-                : undefined
-            );
-          } else if (deletionLineContent != null) {
-            deletionLineContent = withContentProperties(
-              deletionLineContent,
-              lineDecoration.contentProperties,
-              isRenderCacheDirty && deletionLine != null
-                ? {
-                    'data-line': deletionLine.lineNumber,
-                    'data-line-index': `${unifiedLineIndex},${splitLineIndex}`,
-                  }
-                : undefined
-            );
-          }
-          pushLineWithAnnotation({
-            diffStyle: 'unified',
-            type: type,
-            deletionLine: deletionLineContent,
-            additionLine: additionLineContent,
-            unifiedSpan: this.getAnnotations(
-              'unified',
-              deletionLine?.lineNumber,
-              additionLine?.lineNumber,
-              hunkIndex,
-              lineIndex
-            ),
-            createAnnotationElement: (span) =>
-              this.createAnnotationElement(span),
-            context,
-          });
-          if (injectedRows?.after != null) {
-            pushUnifiedInjectedRows(injectedRows.after, context);
-          }
-        } else {
-          const injectedRows =
-            this.getSplitInjectedRowsForLine?.(renderedLineContext);
-          if (injectedRows?.before != null) {
-            pushSplitInjectedRows(
-              injectedRows.before,
-              context,
-              pendingSplitContext
-            );
-          }
-
-          let deletionLineContent =
-            deletionLine != null
-              ? deletionLines[deletionLine.lineIndex]
-              : undefined;
-          let additionLineContent =
-            additionLine != null
-              ? additionLines[additionLine.lineIndex]
-              : undefined;
-          const deletionLineDecoration = this.getSplitLineDecoration({
-            side: 'deletions',
-            type,
-            lineIndex: deletionLine?.lineIndex,
-          });
-          const additionLineDecoration = this.getSplitLineDecoration({
-            side: 'additions',
-            type,
-            lineIndex: additionLine?.lineIndex,
-          });
-
-          if (deletionLineContent == null && additionLineContent == null) {
-            const errorMessage =
-              'DiffHunksRenderer.processDiffResult: deletionLine and additionLine are null, something is wrong';
-            console.error(errorMessage, { file: fileDiff.name });
-            throw new Error(errorMessage);
-          }
-
-          const missingSide = (() => {
-            if (type === 'change') {
-              if (additionLineContent == null) {
-                return 'additions';
-              } else if (deletionLineContent == null) {
-                return 'deletions';
-              }
-            }
-            return undefined;
-          })();
-          if (missingSide != null) {
-            if (
-              pendingSplitContext.side != null &&
-              pendingSplitContext.side !== missingSide
-            ) {
-              pendingSplitContext.flush();
-            }
-            pendingSplitContext.side = missingSide;
-            pendingSplitContext.increment();
-          } else if (type === 'change') {
-            // A change row with both sides fills the column a pending
-            // one-sided buffer was holding open (an insert/delete block
-            // directly followed by a paired block, from similarity
-            // realignment); flush first so the buffer lands above this row.
-            pendingSplitContext.flush();
-          }
-
-          const annotationSpans = this.getAnnotations(
-            'split',
+        } else if (deletionLineContent != null) {
+          deletionLineContent = withContentProperties(
+            deletionLineContent,
+            lineDecoration.contentProperties,
+            isRenderCacheDirty && deletionLine != null
+              ? {
+                  'data-line': deletionLine.lineNumber,
+                  'data-line-index': `${unifiedLineIndex},${splitLineIndex}`,
+                }
+              : undefined
+          );
+        }
+        pushLineWithAnnotation({
+          diffStyle: 'unified',
+          type: type,
+          deletionLine: deletionLineContent,
+          additionLine: additionLineContent,
+          unifiedSpan: this.getAnnotations(
+            'unified',
             deletionLine?.lineNumber,
             additionLine?.lineNumber,
             hunkIndex,
             lineIndex
-          );
-          if (annotationSpans != null && pendingSplitContext.size > 0) {
-            pendingSplitContext.flush();
-          }
-
-          if (deletionLine != null) {
-            const deletionLineDecorated = withContentProperties(
-              deletionLineContent,
-              deletionLineDecoration.contentProperties,
-              isRenderCacheDirty
-                ? {
-                    'data-line': deletionLine.lineNumber,
-                    'data-line-index': `${deletionLine.unifiedLineIndex},${splitLineIndex}`,
-                  }
-                : undefined
-            );
-            pushGutterLineNumber(
-              'deletions',
-              deletionLineDecoration.gutterLineType,
-              deletionLine.lineNumber,
-              `${deletionLine.unifiedLineIndex},${splitLineIndex}`,
-              deletionLineDecoration.gutterProperties
-            );
-            if (deletionLineDecorated != null) {
-              deletionLineContent = deletionLineDecorated;
-            }
-          }
-          if (additionLine != null) {
-            const additionLineDecorated = withContentProperties(
-              additionLineContent,
-              additionLineDecoration.contentProperties,
-              isRenderCacheDirty
-                ? {
-                    'data-line': additionLine.lineNumber,
-                    'data-line-index': `${additionLine.unifiedLineIndex},${splitLineIndex}`,
-                  }
-                : undefined
-            );
-            pushGutterLineNumber(
-              'additions',
-              additionLineDecoration.gutterLineType,
-              additionLine.lineNumber,
-              `${additionLine.unifiedLineIndex},${splitLineIndex}`,
-              additionLineDecoration.gutterProperties
-            );
-            if (additionLineDecorated != null) {
-              additionLineContent = additionLineDecorated;
-            }
-          }
-          pushLineWithAnnotation({
-            diffStyle: 'split',
-            type: type,
-            additionLine: additionLineContent,
-            deletionLine: deletionLineContent,
-            ...annotationSpans,
-            createAnnotationElement: (span) =>
-              this.createAnnotationElement(span),
+          ),
+          createAnnotationElement: (span) => this.createAnnotationElement(span),
+          context,
+        });
+        if (injectedRows?.after != null) {
+          pushUnifiedInjectedRows(injectedRows.after, context);
+        }
+      } else {
+        const injectedRows =
+          this.getSplitInjectedRowsForLine?.(renderedLineContext);
+        if (injectedRows?.before != null) {
+          pushSplitInjectedRows(
+            injectedRows.before,
             context,
-          });
-          if (injectedRows?.after != null) {
-            pushSplitInjectedRows(
-              injectedRows.after,
-              context,
-              pendingSplitContext
-            );
-          }
+            pendingSplitContext
+          );
         }
 
-        const isFinalSplitHunkRow =
-          diffStyle === 'split' &&
-          hunk != null &&
-          splitLineIndex === hunk.splitLineStart + hunk.splitLineCount - 1;
-        const isFinalHunkRow =
-          hunkIndex === fileDiff.hunks.length - 1 &&
-          hunk != null &&
-          (diffStyle === 'split'
-            ? splitLineIndex === hunk.splitLineStart + hunk.splitLineCount - 1
-            : unifiedLineIndex ===
-              hunk.unifiedLineStart + hunk.unifiedLineCount - 1);
-        const splitNoEOFCRDeletion = isFinalSplitHunkRow
-          ? hunk.noEOFCRDeletions
-          : false;
-        const splitNoEOFCRAddition = isFinalSplitHunkRow
-          ? hunk.noEOFCRAdditions
-          : false;
-        const noEOFCRDeletion =
-          (deletionLine?.noEOFCR ?? false) || splitNoEOFCRDeletion;
-        const noEOFCRAddition =
-          (additionLine?.noEOFCR ?? false) || splitNoEOFCRAddition;
-        if (noEOFCRAddition || noEOFCRDeletion) {
-          if (diffStyle === 'split') {
-            pendingSplitContext.flush();
-          }
-          if (noEOFCRDeletion) {
-            const noEOFType =
-              type === 'context' || type === 'context-expanded'
-                ? type
-                : 'change-deletion';
-            if (diffStyle === 'unified') {
-              context.unifiedContentAST.push(createNoNewlineElement(noEOFType));
-              context.pushToGutter(
-                'unified',
-                createGutterGap(noEOFType, 'metadata', 1)
-              );
-            } else {
-              context.deletionsContentAST.push(
-                createNoNewlineElement(noEOFType)
-              );
-              context.pushToGutter(
-                'deletions',
-                createGutterGap(noEOFType, 'metadata', 1)
-              );
-              if (!noEOFCRAddition) {
-                context.pushToGutter(
-                  'additions',
-                  createGutterGap(undefined, 'buffer', 1)
-                );
-                context.additionsContentAST.push(createEmptyRowBuffer(1));
-              }
+        let deletionLineContent =
+          deletionLine != null
+            ? deletionLines[deletionLine.lineIndex]
+            : undefined;
+        let additionLineContent =
+          additionLine != null
+            ? additionLines[additionLine.lineIndex]
+            : undefined;
+        const deletionLineDecoration = this.getSplitLineDecoration({
+          side: 'deletions',
+          type,
+          lineIndex: deletionLine?.lineIndex,
+        });
+        const additionLineDecoration = this.getSplitLineDecoration({
+          side: 'additions',
+          type,
+          lineIndex: additionLine?.lineIndex,
+        });
+
+        if (deletionLineContent == null && additionLineContent == null) {
+          const errorMessage =
+            'DiffHunksRenderer.processDiffResult: deletionLine and additionLine are null, something is wrong';
+          console.error(errorMessage, { file: fileDiff.name });
+          throw new Error(errorMessage);
+        }
+
+        const missingSide = (() => {
+          if (type === 'change') {
+            if (additionLineContent == null) {
+              return 'additions';
+            } else if (deletionLineContent == null) {
+              return 'deletions';
             }
           }
-          if (noEOFCRAddition) {
-            const noEOFType =
-              type === 'context' || type === 'context-expanded'
-                ? type
-                : 'change-addition';
-            if (diffStyle === 'unified') {
-              context.unifiedContentAST.push(createNoNewlineElement(noEOFType));
-              context.pushToGutter(
-                'unified',
-                createGutterGap(noEOFType, 'metadata', 1)
-              );
-            } else {
-              context.additionsContentAST.push(
-                createNoNewlineElement(noEOFType)
-              );
+          return undefined;
+        })();
+        if (missingSide != null) {
+          if (
+            pendingSplitContext.side != null &&
+            pendingSplitContext.side !== missingSide
+          ) {
+            pendingSplitContext.flush();
+          }
+          pendingSplitContext.side = missingSide;
+          pendingSplitContext.increment();
+        } else if (type === 'change') {
+          // A change row with both sides fills the column a pending
+          // one-sided buffer was holding open (an insert/delete block
+          // directly followed by a paired block, from similarity
+          // realignment); flush first so the buffer lands above this row.
+          pendingSplitContext.flush();
+        }
+
+        const annotationSpans = this.getAnnotations(
+          'split',
+          deletionLine?.lineNumber,
+          additionLine?.lineNumber,
+          hunkIndex,
+          lineIndex
+        );
+        if (annotationSpans != null && pendingSplitContext.size > 0) {
+          pendingSplitContext.flush();
+        }
+
+        if (deletionLine != null) {
+          const deletionLineDecorated = withContentProperties(
+            deletionLineContent,
+            deletionLineDecoration.contentProperties,
+            isRenderCacheDirty
+              ? {
+                  'data-line': deletionLine.lineNumber,
+                  'data-line-index': `${deletionLine.unifiedLineIndex},${splitLineIndex}`,
+                }
+              : undefined
+          );
+          pushGutterLineNumber(
+            'deletions',
+            deletionLineDecoration.gutterLineType,
+            deletionLine.lineNumber,
+            `${deletionLine.unifiedLineIndex},${splitLineIndex}`,
+            deletionLineDecoration.gutterProperties
+          );
+          if (deletionLineDecorated != null) {
+            deletionLineContent = deletionLineDecorated;
+          }
+        }
+        if (additionLine != null) {
+          const additionLineDecorated = withContentProperties(
+            additionLineContent,
+            additionLineDecoration.contentProperties,
+            isRenderCacheDirty
+              ? {
+                  'data-line': additionLine.lineNumber,
+                  'data-line-index': `${additionLine.unifiedLineIndex},${splitLineIndex}`,
+                }
+              : undefined
+          );
+          pushGutterLineNumber(
+            'additions',
+            additionLineDecoration.gutterLineType,
+            additionLine.lineNumber,
+            `${additionLine.unifiedLineIndex},${splitLineIndex}`,
+            additionLineDecoration.gutterProperties
+          );
+          if (additionLineDecorated != null) {
+            additionLineContent = additionLineDecorated;
+          }
+        }
+        pushLineWithAnnotation({
+          diffStyle: 'split',
+          type: type,
+          additionLine: additionLineContent,
+          deletionLine: deletionLineContent,
+          ...annotationSpans,
+          createAnnotationElement: (span) => this.createAnnotationElement(span),
+          context,
+        });
+        if (injectedRows?.after != null) {
+          pushSplitInjectedRows(
+            injectedRows.after,
+            context,
+            pendingSplitContext
+          );
+        }
+      }
+
+      const isFinalSplitHunkRow =
+        diffStyle === 'split' &&
+        hunk != null &&
+        splitLineIndex === hunk.splitLineStart + hunk.splitLineCount - 1;
+      const isFinalHunkRow =
+        hunkIndex === fileDiff.hunks.length - 1 &&
+        hunk != null &&
+        (diffStyle === 'split'
+          ? splitLineIndex === hunk.splitLineStart + hunk.splitLineCount - 1
+          : unifiedLineIndex ===
+            hunk.unifiedLineStart + hunk.unifiedLineCount - 1);
+      const splitNoEOFCRDeletion = isFinalSplitHunkRow
+        ? hunk.noEOFCRDeletions
+        : false;
+      const splitNoEOFCRAddition = isFinalSplitHunkRow
+        ? hunk.noEOFCRAdditions
+        : false;
+      const noEOFCRDeletion =
+        (deletionLine?.noEOFCR ?? false) || splitNoEOFCRDeletion;
+      const noEOFCRAddition =
+        (additionLine?.noEOFCR ?? false) || splitNoEOFCRAddition;
+      if (noEOFCRAddition || noEOFCRDeletion) {
+        if (diffStyle === 'split') {
+          pendingSplitContext.flush();
+        }
+        if (noEOFCRDeletion) {
+          const noEOFType =
+            type === 'context' || type === 'context-expanded'
+              ? type
+              : 'change-deletion';
+          if (diffStyle === 'unified') {
+            context.unifiedContentAST.push(createNoNewlineElement(noEOFType));
+            context.pushToGutter(
+              'unified',
+              createGutterGap(noEOFType, 'metadata', 1)
+            );
+          } else {
+            context.deletionsContentAST.push(createNoNewlineElement(noEOFType));
+            context.pushToGutter(
+              'deletions',
+              createGutterGap(noEOFType, 'metadata', 1)
+            );
+            if (!noEOFCRAddition) {
               context.pushToGutter(
                 'additions',
-                createGutterGap(noEOFType, 'metadata', 1)
+                createGutterGap(undefined, 'buffer', 1)
               );
-              if (!noEOFCRDeletion) {
-                context.pushToGutter(
-                  'deletions',
-                  createGutterGap(undefined, 'buffer', 1)
-                );
-                context.deletionsContentAST.push(createEmptyRowBuffer(1));
-              }
+              context.additionsContentAST.push(createEmptyRowBuffer(1));
             }
           }
-          context.incrementRowCount(1);
         }
-
-        if (
-          hunkSeparators !== 'simple' &&
-          hunkSeparators !== 'metadata' &&
-          (collapsedAfter > 0 || (isFinalHunkRow && canHydrateContext))
-        ) {
-          pushSeparators({
-            hunkIndex: type === 'context-expanded' ? hunkIndex : hunkIndex + 1,
-            collapsedLines:
-              isFinalHunkRow && canHydrateContext ? 'unknown' : collapsedAfter,
-            rangeSize: trailingRangeSize,
-            hunkSpecs: undefined,
-            isFirstHunk: false,
-            isLastHunk: true,
-            isExpandable: isExpandableDiff,
-          });
+        if (noEOFCRAddition) {
+          const noEOFType =
+            type === 'context' || type === 'context-expanded'
+              ? type
+              : 'change-addition';
+          if (diffStyle === 'unified') {
+            context.unifiedContentAST.push(createNoNewlineElement(noEOFType));
+            context.pushToGutter(
+              'unified',
+              createGutterGap(noEOFType, 'metadata', 1)
+            );
+          } else {
+            context.additionsContentAST.push(createNoNewlineElement(noEOFType));
+            context.pushToGutter(
+              'additions',
+              createGutterGap(noEOFType, 'metadata', 1)
+            );
+            if (!noEOFCRDeletion) {
+              context.pushToGutter(
+                'deletions',
+                createGutterGap(undefined, 'buffer', 1)
+              );
+              context.deletionsContentAST.push(createEmptyRowBuffer(1));
+            }
+          }
         }
         context.incrementRowCount(1);
-      },
-    });
+      }
+
+      if (
+        windowSeparatorsAfter != null &&
+        hunkSeparators !== 'simple' &&
+        hunkSeparators !== 'metadata'
+      ) {
+        for (const spec of windowSeparatorsAfter) {
+          pushWindowSeparator(spec);
+        }
+      } else if (
+        windowSeparatorsAfter == null &&
+        hunkSeparators !== 'simple' &&
+        hunkSeparators !== 'metadata' &&
+        (collapsedAfter > 0 || (isFinalHunkRow && canHydrateContext))
+      ) {
+        pushSeparators({
+          hunkIndex: type === 'context-expanded' ? hunkIndex : hunkIndex + 1,
+          collapsedLines:
+            isFinalHunkRow && canHydrateContext ? 'unknown' : collapsedAfter,
+          rangeSize: trailingRangeSize,
+          hunkSpecs: undefined,
+          isFirstHunk: false,
+          isLastHunk: true,
+          isExpandable: isExpandableDiff,
+        });
+      }
+      context.incrementRowCount(1);
+    };
+
+    if (windowState != null) {
+      // Windowed snippet: walk only the window's rows, folding everything else
+      // into the same collapsedBefore/After separators the callback already
+      // renders — expandable because the diff is non-partial.
+      this.lastWindowModel = undefined;
+      this.windowExpandIndexToFoldId = new Map();
+      iterateWindowedDiff({
+        diff: fileDiff,
+        window: windowState.window,
+        collapsedContextThreshold,
+        expansionBounds: windowState.expansionBounds,
+        reveal: windowState.reveal,
+        callback: diffRowCallback,
+        onModel: (model, expandIndexToFoldId) => {
+          this.lastWindowModel = model;
+          this.windowExpandIndexToFoldId = expandIndexToFoldId;
+        },
+      });
+    } else {
+      iterateOverDiff({
+        diff: fileDiff,
+        diffStyle,
+        startingLine: renderRange.startingLine,
+        totalLines: renderRange.totalLines,
+        expandedHunks: expandUnchanged ? true : this.expandedHunks,
+        collapsedContextThreshold,
+        callback: diffRowCallback,
+      });
+    }
 
     if (diffStyle === 'split') {
       pendingSplitContext.flush();

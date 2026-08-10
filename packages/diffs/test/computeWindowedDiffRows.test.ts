@@ -80,21 +80,22 @@ describe('computeWindowedDiffRows', () => {
     expect(below?.canExpandDown).toBe(true);
   });
 
-  test("expansionBounds: 'window' clamps boundary folds to the window edge", () => {
+  test('every fold offers both expand directions; the host owns extent', () => {
     const result = computeWindowedDiffRows({
       diff: makeDiff(),
       window: { start: 25, end: 35 },
       collapsedContextThreshold: 50,
-      expansionBounds: 'window',
     });
     const seps = separators(result);
     const above = seps.find((s) => s.id === WINDOW_ABOVE_ID);
     const below = seps.find((s) => s.id === WINDOW_BELOW_ID);
-    // Above fold may only open toward the window (down); below only up.
-    expect(above?.canExpandUp).toBe(false);
+    // No library-side expansion policy: any fold with hidden lines can peel
+    // from either edge. Bounding expansion is the host's job (widening the
+    // window on an onWindowExpand boundary-fold click).
+    expect(above?.canExpandUp).toBe(true);
     expect(above?.canExpandDown).toBe(true);
     expect(below?.canExpandUp).toBe(true);
-    expect(below?.canExpandDown).toBe(false);
+    expect(below?.canExpandDown).toBe(true);
   });
 
   test('long unchanged runs inside the window collapse into interior folds', () => {

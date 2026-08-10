@@ -13,14 +13,6 @@ export interface DiffWindow {
   end: number;
 }
 
-/**
- * Whether expanding a windowed boundary/interior separator may walk past the
- * window edge into the rest of the file (`'file'`) or stops at the window edge
- * (`'window'`). `'file'` is the default: the reader can keep pulling context
- * out of the collapsed regions, exactly like a normal collapsed diff.
- */
-export type WindowExpansionBounds = 'file' | 'window';
-
 /** Stable identity for the above/below boundary folds. */
 export const WINDOW_ABOVE_ID = 'window:above';
 export const WINDOW_BELOW_ID = 'window:below';
@@ -62,8 +54,6 @@ export interface ComputeWindowedDiffRowsProps {
    * `DEFAULT_COLLAPSED_CONTEXT_THRESHOLD`.
    */
   collapsedContextThreshold?: number;
-  /** Whether separators may expand past the window edge into the file. */
-  expansionBounds?: WindowExpansionBounds;
   /** Reader-driven reveals accumulated from separator clicks. */
   reveal?: WindowReveal;
 }
@@ -127,6 +117,31 @@ export interface WindowedDiffResult {
   totalCollapsed: number;
 }
 
+/**
+ * One folded region handed to host windowing hooks (`onExpand`,
+ * `renderWindowSeparator`). It is the public, render-agnostic view of a
+ * `WindowedDiffSeparatorRow`: the host decides how to draw it and what an
+ * expander click does. Only relevant when a diff is rendered with a `window`.
+ */
+export interface WindowFold {
+  /** Stable fold id, also the routing key for reveals. */
+  foldId: string;
+  /**
+   * Where the fold sits relative to the window. Only `above`/`below` boundary
+   * folds can reach a neighbouring snippet; `interior` folds are inside the
+   * window and safe to expand in place.
+   */
+  boundary: 'above' | 'below' | 'interior';
+  /** Rendered rows currently hidden behind the fold. */
+  collapsedLines: number;
+  /** True when the hidden run still contains a real change (ground truth). */
+  containsChanges: boolean;
+  /** One-based new-file range `[start, end]` the fold hides, if contiguous. */
+  newLineRange: [number, number] | undefined;
+  /** Whether the fold can still peel from each edge. */
+  expandable: { up: boolean; down: boolean };
+}
+
 interface FlatRow {
   row: DiffLineCallbackProps;
   newLine: number | undefined;
@@ -153,7 +168,6 @@ export function computeWindowedDiffRows({
   window,
   diffStyle = 'unified',
   collapsedContextThreshold = DEFAULT_COLLAPSED_CONTEXT_THRESHOLD,
-  expansionBounds = 'file',
   reveal = createEmptyReveal(),
 }: ComputeWindowedDiffRowsProps): WindowedDiffResult {
   if (diff.isPartial) {
@@ -235,7 +249,6 @@ export function computeWindowedDiffRows({
     totalCollapsed += emitFold(flat.slice(fold.start, fold.end), {
       id: fold.id,
       boundary: fold.boundary,
-      expansionBounds,
       reveal,
       out: rows,
     });
@@ -412,7 +425,6 @@ function hasInWindowNeighbor(
 interface EmitFoldProps {
   id: string;
   boundary: 'above' | 'below' | 'interior';
-  expansionBounds: WindowExpansionBounds;
   reveal: WindowReveal;
   out: WindowedDiffRow[];
 }
@@ -426,7 +438,7 @@ interface EmitFoldProps {
  */
 function emitFold(
   run: FlatRow[],
-  { id, boundary, expansionBounds, reveal, out }: EmitFoldProps
+  { id, boundary, reveal, out }: EmitFoldProps
 ): number {
   const revealed = reveal.get(id);
   const fromStart = Math.min(Math.max(revealed?.fromStart ?? 0, 0), run.length);
@@ -441,25 +453,17 @@ function emitFold(
   }
   if (hiddenCount > 0) {
     const hiddenRun = run.slice(fromStart, run.length - fromEnd);
-    // With `expansionBounds: 'window'` a boundary fold only opens toward the
-    // window edge (above → down, below → up). Interior folds and the `'file'`
-    // mode open both ways.
-    const canExpandUp =
-      boundary === 'interior' ||
-      boundary === 'below' ||
-      expansionBounds === 'file';
-    const canExpandDown =
-      boundary === 'interior' ||
-      boundary === 'above' ||
-      expansionBounds === 'file';
+    // Every fold can peel from both edges; the host owns how far by widening
+    // the window on an onExpand boundary-fold click, or the interior reveal
+    // grows in place. Both directions are always offered when lines remain.
     out.push({
       kind: 'separator',
       id,
       boundary,
       collapsedLines: hiddenCount,
       containsChanges: hiddenRun.some((entry) => entry.isChange),
-      canExpandUp,
-      canExpandDown,
+      canExpandUp: true,
+      canExpandDown: true,
       newLineRange: newLineRange(hiddenRun),
     });
   }

@@ -196,4 +196,88 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
       cleanup();
     }
   });
+
+  test('onWindowExpand fires with the fold and suppresses reveal when handled', async () => {
+    const { cleanup } = installDom();
+    let instance: FileDiff<string> | undefined;
+    try {
+      const fileContainer = document.createElement('div');
+      const calls: Array<{ boundary: string; containsChanges: boolean }> = [];
+      instance = new FileDiff<string>({
+        disableFileHeader: true,
+        diffStyle: 'unified',
+        hunkSeparators: 'line-info',
+        window: { start: 25, end: 35 },
+        collapsedContextThreshold: 50,
+        // Return true to claim the click: the host would widen the window; here
+        // we just record it and assert the built-in reveal did NOT run.
+        onWindowExpand: (fold) => {
+          calls.push({
+            boundary: fold.boundary,
+            containsChanges: fold.containsChanges,
+          });
+          return true;
+        },
+      });
+      instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
+      await waitForRenderedCode(fileContainer);
+
+      const before = renderedLineNumbers(fileContainer);
+      const aboveIndex = Number.parseInt(
+        expandSeparators(fileContainer)[0].getAttribute('data-expand-index')!,
+        10
+      );
+      instance.expandHunk(aboveIndex, 'down', 3);
+      await waitForRenderedCode(fileContainer);
+
+      // The callback saw the above boundary fold, which hides the line-5 change.
+      expect(calls).toHaveLength(1);
+      expect(calls[0].boundary).toBe('above');
+      expect(calls[0].containsChanges).toBe(true);
+      // Handled === true suppressed the in-place reveal: no new rows appeared.
+      expect(renderedLineNumbers(fileContainer)).toEqual(before);
+    } finally {
+      instance?.cleanUp();
+      cleanup();
+    }
+  });
+
+  test('renderWindowSeparator supplies custom fold DOM in place of line-info', async () => {
+    const { cleanup } = installDom();
+    let instance: FileDiff<string> | undefined;
+    try {
+      const fileContainer = document.createElement('div');
+      instance = new FileDiff<string>({
+        disableFileHeader: true,
+        diffStyle: 'unified',
+        hunkSeparators: 'line-info',
+        window: { start: 25, end: 35 },
+        collapsedContextThreshold: 50,
+        renderWindowSeparator: (fold) => {
+          const el = document.createElement('button');
+          el.setAttribute('data-custom-fold', fold.boundary);
+          el.textContent = fold.containsChanges
+            ? `${fold.collapsedLines} lines, changes above`
+            : `${fold.collapsedLines} unchanged`;
+          return el;
+        },
+      });
+      instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
+      await waitForRenderedCode(fileContainer);
+
+      // Custom separators are filled into slots as light-DOM children of the
+      // container (not inside the shadow root).
+      const containerCustom =
+        fileContainer.querySelectorAll('[data-custom-fold]');
+      expect(containerCustom.length).toBeGreaterThan(0);
+      const boundaries = Array.from(containerCustom).map((n) =>
+        n.getAttribute('data-custom-fold')
+      );
+      // The above boundary fold rendered its custom affordance.
+      expect(boundaries).toContain('above');
+    } finally {
+      instance?.cleanUp();
+      cleanup();
+    }
+  });
 });

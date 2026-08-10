@@ -3,7 +3,6 @@ import {
   computeWindowedDiffRows,
   type DiffWindow,
   type WindowedDiffResult,
-  type WindowExpansionBounds,
   type WindowReveal,
 } from './computeWindowedDiffRows';
 import type {
@@ -16,15 +15,23 @@ import type {
  * A fold to draw as a separator adjacent to a kept row. The renderer reads this
  * off the row and pushes the separator directly, so windowed separators do not
  * ride the `collapsedBefore`/`collapsedAfter` numeric channel (whose expand
- * index is derived from real hunk numbers that windowing does not have).
+ * index is derived from real hunk numbers that windowing does not have). It also
+ * carries the fold's windowing metadata so the renderer can hand a `WindowFold`
+ * to a host `renderWindowSeparator` hook.
  */
 export interface WindowSeparatorSpec {
   /** Unique expand index, emitted as `data-expand-index` and used to route clicks. */
   expandIndex: number;
   /** Stable fold id this expand index maps back to. */
   foldId: string;
+  /** Where this fold sits relative to the window. */
+  boundary: 'above' | 'below' | 'interior';
   /** Rendered rows hidden behind this fold, shown as "N unmodified lines". */
   collapsedLines: number;
+  /** Whether the hidden run still contains a real change (ground truth). */
+  containsChanges: boolean;
+  /** One-based new-file range `[start, end]` the fold hides, if contiguous. */
+  newLineRange: [number, number] | undefined;
   canExpandUp: boolean;
   canExpandDown: boolean;
   /** Total hidden lines, for chunked-expansion affordance sizing. */
@@ -53,7 +60,6 @@ export interface IterateWindowedDiffProps {
   window: DiffWindow;
   diffStyle?: 'unified' | 'split';
   collapsedContextThreshold?: number;
-  expansionBounds?: WindowExpansionBounds;
   reveal?: WindowReveal;
   callback: DiffLineCallback;
   /**
@@ -89,7 +95,6 @@ export function iterateWindowedDiff({
   window,
   diffStyle = 'unified',
   collapsedContextThreshold,
-  expansionBounds,
   reveal,
   callback,
   onModel,
@@ -99,7 +104,6 @@ export function iterateWindowedDiff({
     window,
     diffStyle,
     collapsedContextThreshold,
-    expansionBounds,
     reveal,
   });
 
@@ -134,7 +138,10 @@ export function iterateWindowedDiff({
     return {
       expandIndex,
       foldId: row.id,
+      boundary: row.boundary,
       collapsedLines: row.collapsedLines,
+      containsChanges: row.containsChanges,
+      newLineRange: row.newLineRange,
       canExpandUp: row.canExpandUp,
       canExpandDown: row.canExpandDown,
       rangeSize: row.collapsedLines,

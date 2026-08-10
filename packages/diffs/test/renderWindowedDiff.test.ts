@@ -60,25 +60,7 @@ describe('renderWindowedDiffHTML', () => {
     expect(html).not.toContain('More unchanged context may be available');
   });
 
-  test("expansionBounds: 'window' clamps the boundary fold arrows", async () => {
-    const { oldFile, newFile } = files();
-    // In 'window' mode the above fold can only expand down (toward the window)
-    // and the below fold only up, which the renderer marks as first-/last-hunk
-    // separators (single-direction arrows).
-    const html = await renderWindowedDiffHTML({
-      oldFile,
-      newFile,
-      window: { start: 25, end: 35 },
-      expansionBounds: 'window',
-      options: { diffStyle: 'unified', hunkSeparators: 'line-info' },
-    });
-    expect(html).toContain('data-separator-first');
-    expect(html).toContain('data-separator-last');
-    expect(html).toContain('data-expand-down');
-    expect(html).toContain('data-expand-up');
-  });
-
-  test("default 'file' expansion offers both-direction arrows on folds", async () => {
+  test('folds offer both-direction expand arrows (host owns extent)', async () => {
     const { oldFile, newFile } = files();
     const html = await renderWindowedDiffHTML({
       oldFile,
@@ -86,8 +68,8 @@ describe('renderWindowedDiffHTML', () => {
       window: { start: 25, end: 35 },
       options: { diffStyle: 'unified', hunkSeparators: 'line-info' },
     });
-    // Every fold can walk into the file both ways, so the both-arrows affordance
-    // is present and no fold is pinned to a single direction marker.
+    // No library-side expansion clamp: every fold with hidden lines can peel
+    // both ways, so the both-arrows affordance is present.
     expect(html).toContain('data-expand-both');
   });
 

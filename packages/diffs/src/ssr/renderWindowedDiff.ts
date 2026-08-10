@@ -7,7 +7,6 @@ import type { DiffLineAnnotation, FileContents } from '../types';
 import {
   createEmptyReveal,
   type DiffWindow,
-  type WindowExpansionBounds,
   type WindowReveal,
 } from '../utils/computeWindowedDiffRows';
 import { parseDiffFromFile } from '../utils/parseDiffFromFile';
@@ -24,8 +23,6 @@ export interface RenderWindowedDiffOptions<
   newFile: FileContents;
   /** New-side line range to show expanded; everything else folds. */
   window: DiffWindow;
-  /** Whether folds may expand past the window edge into the file. Default `'file'`. */
-  expansionBounds?: WindowExpansionBounds;
   /** Reader-driven reveals (for SSR re-renders after expansion). */
   reveal?: WindowReveal;
   options?: FileDiffOptions<LAnnotation, Caret>;
@@ -50,7 +47,6 @@ export async function renderWindowedDiffHTML<
   oldFile,
   newFile,
   window,
-  expansionBounds = 'file',
   reveal,
   options,
   annotations,
@@ -65,7 +61,6 @@ export async function renderWindowedDiffHTML<
   );
   renderer.setWindowState({
     window,
-    expansionBounds,
     reveal: reveal ?? createEmptyReveal(),
   });
   if (annotations != null && annotations.length > 0) {

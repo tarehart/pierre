@@ -89,7 +89,7 @@ import {
 import {
   createEmptyReveal,
   type DiffWindow,
-  type WindowExpansionBounds,
+  type WindowFold,
   type WindowReveal,
 } from '../utils/computeWindowedDiffRows';
 import { createAnnotationWrapperNode } from '../utils/createAnnotationWrapperNode';
@@ -288,11 +288,29 @@ export interface FileDiffOptions<LAnnotation, Caret>
    */
   window?: DiffWindow;
   /**
-   * Whether windowed folds may expand past the window edge into the file
-   * (`'file'`, default) or stop at the window edge (`'window'`). Ignored unless
-   * `window` is set.
+   * Called when the reader clicks the expander on a windowed fold. Only fires
+   * while `window` is set. The host owns what expansion means: widen the
+   * `window` prop (clamped to a neighbouring snippet's edge, if any), navigate
+   * elsewhere, etc. Return `true` to signal the click was handled and suppress
+   * the built-in in-place reveal; return falsy to let the fold peel open
+   * itself. Boundary (`above`/`below`) folds are the ones that can reach an
+   * adjacent snippet; `interior` folds are safe to leave on the default reveal.
    */
-  windowExpansionBounds?: WindowExpansionBounds;
+  onWindowExpand?(
+    fold: WindowFold,
+    direction: ExpansionDirections
+  ): boolean | void;
+  /**
+   * Render the separator for a windowed fold. Only fires while `window` is set.
+   * Return an element to fully own the fold's affordance (label, expander,
+   * change indicator via `fold.containsChanges`); return `undefined` to fall
+   * back to the built-in `line-info` separator. One hook for all fold kinds —
+   * branch on `fold.boundary`. Not built on the deprecated `hunkSeparators`
+   * function surface.
+   */
+  renderWindowSeparator?(
+    fold: WindowFold
+  ): HTMLElement | DocumentFragment | null | undefined;
   renderHeaderPrefix?: RenderHeaderPrefixCallback;
   renderHeaderFilenameSuffix?: RenderHeaderFilenameSuffixCallback;
   renderHeaderMetadata?: RenderHeaderMetadataCallback;
@@ -647,12 +665,12 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
     this.syncInteractionOptions();
   }
 
-  // Push the current `window`/`windowExpansionBounds` options onto the renderer
-  // as windowed-render state, preserving the reader's fold reveals across
-  // option updates. The reveal is reset only when the window range itself
-  // changes (a new snippet), matching how a fresh diff clears expansion.
+  // Push the current `window` option onto the renderer as windowed-render
+  // state, preserving the reader's fold reveals across option updates. The
+  // reveal is reset only when the window range itself changes (a new snippet),
+  // matching how a fresh diff clears expansion.
   private syncWindowState(): void {
-    const { window, windowExpansionBounds } = this.options;
+    const { window } = this.options;
     if (window == null) {
       if (this.appliedWindowKey !== undefined) {
         this.windowReveal = undefined;
@@ -661,7 +679,7 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
       }
       return;
     }
-    const key = `${window.start}:${window.end}:${windowExpansionBounds ?? 'file'}`;
+    const key = `${window.start}:${window.end}`;
     if (key !== this.appliedWindowKey) {
       this.windowReveal = createEmptyReveal();
       this.appliedWindowKey = key;
@@ -669,8 +687,8 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
     this.windowReveal ??= createEmptyReveal();
     this.hunksRenderer.setWindowState({
       window,
-      expansionBounds: windowExpansionBounds ?? 'file',
       reveal: this.windowReveal,
+      hasSeparatorRenderer: this.options.renderWindowSeparator != null,
     });
   }
 
@@ -1224,18 +1242,25 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
     expansionLineCountOverride?: number
   ): void => {
     // In windowed mode the clicked separator's `data-expand-index` is a fold
-    // index, not a hunk index; route it to the fold's reveal. `hunkIndex` is
-    // the index the renderer emitted for this separator.
-    if (
-      this.options.window != null &&
-      this.hunksRenderer.expandWindowByIndex(
-        hunkIndex,
-        direction,
-        expansionLineCountOverride
-      )
-    ) {
-      this.rerender();
-      return;
+    // index, not a hunk index. `hunkIndex` is the index the renderer emitted
+    // for this separator.
+    if (this.options.window != null) {
+      const fold = this.hunksRenderer.getWindowFoldByExpandIndex(hunkIndex);
+      if (fold != null) {
+        // Offer the click to the host first. If it handles it (e.g. widens the
+        // window prop for a boundary fold, or navigates away), suppress the
+        // built-in in-place reveal and let the host's own re-render follow.
+        if (this.options.onWindowExpand?.(fold, direction) === true) {
+          return;
+        }
+        this.hunksRenderer.expandWindowByIndex(
+          hunkIndex,
+          direction,
+          expansionLineCountOverride
+        );
+        this.rerender();
+        return;
+      }
     }
     this.hunksRenderer.expandHunk(
       hunkIndex,
@@ -2607,11 +2632,13 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
   }
 
   private renderSeparators(hunkData: HunkData[]): void {
-    const { hunkSeparators } = this.options;
+    const { hunkSeparators, renderWindowSeparator, window } = this.options;
+    const windowed = window != null && renderWindowSeparator != null;
+    const customFn = typeof hunkSeparators === 'function';
     if (
       this.isContainerManaged ||
       this.fileContainer == null ||
-      typeof hunkSeparators !== 'function'
+      (!customFn && !windowed)
     ) {
       for (const { element } of this.separatorCache.values()) {
         element.remove();
@@ -2628,7 +2655,17 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
         const element = document.createElement('div');
         element.style.display = 'contents';
         element.slot = hunk.slotName;
-        const child = hunkSeparators(hunk, this);
+        // A windowed fold slot resolves to a WindowFold and uses the window
+        // hook; any other custom slot uses the (deprecated) hunkSeparators fn.
+        const fold = windowed
+          ? this.hunksRenderer.getWindowFoldByExpandIndex(hunk.hunkIndex)
+          : undefined;
+        const child =
+          fold != null && renderWindowSeparator != null
+            ? renderWindowSeparator(fold)
+            : customFn
+              ? hunkSeparators(hunk, this)
+              : undefined;
         if (child != null) {
           element.appendChild(child);
         }

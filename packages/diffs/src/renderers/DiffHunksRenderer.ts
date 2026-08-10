@@ -50,7 +50,7 @@ import {
   WINDOW_ABOVE_ID,
   WINDOW_BELOW_ID,
   type WindowedDiffResult,
-  type WindowExpansionBounds,
+  type WindowFold,
   type WindowReveal,
 } from '../utils/computeWindowedDiffRows';
 import { createAnnotationElement as createDefaultAnnotationElement } from '../utils/createAnnotationElement';
@@ -145,6 +145,13 @@ interface PushSeparatorProps {
   isFirstHunk: boolean;
   isLastHunk: boolean;
   isExpandable: boolean;
+  /**
+   * Force this separator to render as an empty `custom` slot the host fills,
+   * regardless of the configured `hunkSeparators` mode. Used for windowed folds
+   * when a `renderWindowSeparator` hook is present so the host owns the
+   * affordance; the slot's `hunkData.hunkIndex` is the fold's expand index.
+   */
+  forceCustomSlot?: boolean;
 }
 
 interface ProcessContext {
@@ -174,7 +181,12 @@ export interface DiffHunksRendererOptions extends BaseDiffOptions {
 export interface DiffWindowRenderState {
   window: DiffWindow;
   reveal: WindowReveal;
-  expansionBounds: WindowExpansionBounds;
+  /**
+   * When true, windowed fold separators render as empty `custom` slots for the
+   * host's `renderWindowSeparator` hook to fill, instead of the built-in
+   * `line-info` separator.
+   */
+  hasSeparatorRenderer?: boolean;
 }
 
 export interface DiffHunksRendererOptionsWithDefaults extends Omit<
@@ -578,6 +590,34 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
   /** The windowed model from the most recent render, for host separator wiring. */
   public getWindowModel(): WindowedDiffResult | undefined {
     return this.lastWindowModel;
+  }
+
+  /**
+   * The public `WindowFold` for a rendered separator's `expandIndex` (its
+   * `data-expand-index`), or undefined when the index is not a windowed fold in
+   * the current render. Lets host hooks (`renderWindowSeparator`, expansion
+   * click routing) resolve a DOM separator to its fold without recomputing.
+   */
+  public getWindowFoldByExpandIndex(
+    expandIndex: number
+  ): WindowFold | undefined {
+    const foldId = this.windowExpandIndexToFoldId.get(expandIndex);
+    if (foldId == null || this.lastWindowModel == null) {
+      return undefined;
+    }
+    for (const row of this.lastWindowModel.rows) {
+      if (row.kind === 'separator' && row.id === foldId) {
+        return {
+          foldId: row.id,
+          boundary: row.boundary,
+          collapsedLines: row.collapsedLines,
+          containsChanges: row.containsChanges,
+          newLineRange: row.newLineRange,
+          expandable: { up: row.canExpandUp, down: row.canExpandDown },
+        };
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1649,6 +1689,10 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     // explicit spec rather than the collapsedBefore/After counters. The
     // expand-arrow direction comes from the fold's own canExpandUp/Down
     // (`isFirstHunk` suppresses the up arrow, `isLastHunk` the down arrow).
+    // When the host supplies a `renderWindowSeparator` hook, fold separators
+    // render as empty custom slots the host fills instead of built-in line-info.
+    const windowHasSeparatorRenderer =
+      windowState?.hasSeparatorRenderer === true;
     function pushWindowSeparator(spec: WindowSeparatorSpec) {
       pushSeparators({
         hunkIndex: spec.expandIndex,
@@ -1658,6 +1702,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         isFirstHunk: !spec.canExpandUp,
         isLastHunk: !spec.canExpandDown,
         isExpandable: true,
+        forceCustomSlot: windowHasSeparatorRenderer,
       });
     }
 
@@ -2058,7 +2103,6 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         window: windowState.window,
         diffStyle,
         collapsedContextThreshold,
-        expansionBounds: windowState.expansionBounds,
         reveal: windowState.reveal,
         callback: diffRowCallback,
         onModel: (model, expandIndexToFoldId) => {
@@ -2537,6 +2581,7 @@ function pushSeparator(
     isFirstHunk,
     isLastHunk,
     isExpandable,
+    forceCustomSlot,
   }: PushSeparatorProps,
   context: ProcessContext
 ) {
@@ -2550,7 +2595,12 @@ function pushSeparator(
         ? context.deletionsContentAST
         : context.additionsContentAST;
 
-  if (context.hunkSeparators === 'metadata') {
+  // A windowed fold with a host `renderWindowSeparator` hook renders as an
+  // empty custom slot the host fills, bypassing the configured separator mode.
+  const separatorType =
+    forceCustomSlot === true ? 'custom' : context.hunkSeparators;
+
+  if (separatorType === 'metadata') {
     if (hunkSpecs != null) {
       context.pushToGutter(
         type,
@@ -2575,7 +2625,7 @@ function pushSeparator(
     }
     return;
   }
-  if (context.hunkSeparators === 'simple') {
+  if (separatorType === 'simple') {
     if (hunkIndex > 0) {
       context.pushToGutter(
         type,
@@ -2600,7 +2650,7 @@ function pushSeparator(
   context.pushToGutter(
     type,
     createSeparator({
-      type: context.hunkSeparators,
+      type: separatorType,
       content,
       expandIndex,
       chunked,
@@ -2611,7 +2661,7 @@ function pushSeparator(
   );
   linesAST.push(
     createSeparator({
-      type: context.hunkSeparators,
+      type: separatorType,
       content,
       expandIndex,
       chunked,

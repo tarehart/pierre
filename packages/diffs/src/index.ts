@@ -61,6 +61,8 @@ export * from './utils/areWorkerStatsEqual';
 export * from './utils/cleanLastNewline';
 export * from './utils/cloneFileDiffMetadata';
 export * from './utils/computeWindowedDiffRows';
+export * from './utils/computeWindowedFileRows';
+export * from './utils/windowingCore';
 export * from './utils/createAnnotationElement';
 export * from './utils/createAnnotationWrapperNode';
 export * from './utils/createEmptyRowBuffer';

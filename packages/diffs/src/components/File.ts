@@ -29,7 +29,11 @@ import {
   type SelectionWriteOptions,
 } from '../managers/InteractionManager';
 import { ResizeManager } from '../managers/ResizeManager';
-import { FileRenderer, type FileRenderResult } from '../renderers/FileRenderer';
+import {
+  FileRenderer,
+  type FileRenderResult,
+  type FileWindowRenderState,
+} from '../renderers/FileRenderer';
 import { SVGSpriteSheet } from '../sprite';
 export type { FileEditCompleteEvent } from '../editor/types';
 import {
@@ -41,6 +45,7 @@ import type {
   BaseCodeOptions,
   DiffLineAnnotation,
   DiffsHighlighter,
+  ExpansionDirections,
   FileContents,
   HighlightedToken,
   LineAnnotation,
@@ -56,6 +61,13 @@ import { areLineAnnotationsEqual } from '../utils/areLineAnnotationsEqual';
 import { arePrePropertiesEqual } from '../utils/arePrePropertiesEqual';
 import { areRenderRangesEqual } from '../utils/areRenderRangesEqual';
 import { areThemesEqual } from '../utils/areThemesEqual';
+import type {
+  DiffWindow,
+  FoldReveal,
+  WindowFold,
+  WindowReveal,
+} from '../utils/computeWindowedDiffRows';
+import { createEmptyReveal } from '../utils/computeWindowedDiffRows';
 import { createAnnotationWrapperNode } from '../utils/createAnnotationWrapperNode';
 import { createGutterUtilityContentNode } from '../utils/createGutterUtilityContentNode';
 import { createUnsafeCSSStyleNode } from '../utils/createUnsafeCSSStyleNode';
@@ -164,6 +176,38 @@ export interface FileOptions<LAnnotation, Caret>
    * receives the detached editor with its final pre-detach state.
    */
   onEditComplete?: FileEditCompleteHandler<LAnnotation, Caret>;
+
+  /**
+   * When set, only lines in `[start, end]` (1-based, inclusive) are rendered;
+   * everything outside collapses to expandable above/below boundary separators.
+   * Every line inside the window is always shown — a plain file has no interior
+   * folds. Clearing this option restores the full-file view.
+   */
+  window?: DiffWindow;
+
+  /**
+   * Called when the reader clicks the expander on a windowed fold. Only fires
+   * while `window` is set. Return `true` to claim the event and suppress the
+   * built-in in-place reveal (the host widens `window` as it likes — e.g.
+   * clamped to a neighbouring snippet's edge); return falsy to let the fold peel
+   * open in place. `direction` matches `FileDiff.onWindowExpand`: today a plain
+   * file only produces `above`/`below` boundary folds (whose expander reports
+   * `down`/`up` respectively), but the full `ExpansionDirections` type — including
+   * `both` — is passed through so interior folds remain expressible if the file
+   * engine ever gains them.
+   */
+  onWindowExpand?: (
+    fold: WindowFold,
+    direction: ExpansionDirections
+  ) => boolean | void;
+
+  /**
+   * Return custom DOM to replace the built-in separator label for a windowed
+   * fold. Return `undefined` to fall back to the default `line-info` separator.
+   * Called for every fold — branch on `fold.boundary` to differentiate
+   * above/below boundary folds from interior folds.
+   */
+  renderWindowSeparator?: (fold: WindowFold) => HTMLElement | undefined;
 }
 
 interface AnnotationElementCache<LAnnotation> {
@@ -248,6 +292,11 @@ export class File<LAnnotation = undefined, Caret = undefined> {
   protected enabled = true;
 
   protected editor: Editor<'file', LAnnotation, Caret> | undefined;
+
+  // Windowed-file state. `windowReveal` accumulates reader-driven expand
+  // clicks and is reset whenever the window range itself changes.
+  private windowReveal: WindowReveal = createEmptyReveal();
+  private lastAppliedWindowRange: { start: number; end: number } | undefined;
 
   constructor(
     public options: FileOptions<LAnnotation, Caret> = {
@@ -436,7 +485,110 @@ export class File<LAnnotation = undefined, Caret = undefined> {
   }
 
   protected syncInteractionOptions(): void {
-    this.interactionManager.setOptions(pluckInteractionOptions(this.options));
+    this.interactionManager.setOptions(
+      pluckInteractionOptions(
+        this.options,
+        this.options.window != null ? this.expandHunk : undefined
+      )
+    );
+  }
+
+  /**
+   * Push the current window + reveal state into the renderer before a render.
+   * Resets reveal when the window range changes (new window position = fresh
+   * set of base folds with different ids).
+   */
+  private syncWindowState(): void {
+    const { window, renderWindowSeparator } = this.options;
+    if (window == null) {
+      this.fileRenderer.setWindowState(null);
+      return;
+    }
+    // Reset reveal when the window range has changed.
+    const last = this.lastAppliedWindowRange;
+    if (
+      last == null ||
+      last.start !== window.start ||
+      last.end !== window.end
+    ) {
+      this.windowReveal = createEmptyReveal();
+      this.lastAppliedWindowRange = { start: window.start, end: window.end };
+    }
+    const state: FileWindowRenderState = {
+      window,
+      reveal: this.windowReveal,
+      hasSeparatorRenderer: renderWindowSeparator != null,
+    };
+    this.fileRenderer.setWindowState(state);
+  }
+
+  /**
+   * Expand a windowed fold. Called by `InteractionManager.onHunkExpand` when
+   * the user clicks a separator's expand button. If `onWindowExpand` claims the
+   * click (returns true), the built-in reveal is suppressed.
+   */
+  public expandHunk = (
+    expandIndex: number,
+    direction: ExpansionDirections,
+    count = 10
+  ): void => {
+    const fold = this.fileRenderer.getWindowFoldByExpandIndex(expandIndex);
+    if (fold == null) return;
+
+    const { onWindowExpand } = this.options;
+    if (onWindowExpand != null && onWindowExpand(fold, direction) === true) {
+      return; // host claimed the click
+    }
+
+    // Built-in in-place reveal: peel `count` lines off the fold's edge(s). The
+    // above fold only opens toward the window (its bottom edge, `fromEnd`) and
+    // the below fold only toward the window (its top edge, `fromStart`), so a
+    // click on either peels the correct edge regardless of the reported
+    // direction; an interior fold (should the file engine ever produce one)
+    // honors the requested direction, and `both` peels both edges. This mirrors
+    // DiffHunksRenderer.expandWindowSeparator.
+    const current = this.windowReveal.get(fold.foldId) ?? {
+      fromStart: 0,
+      fromEnd: 0,
+    };
+    const towardStart =
+      direction === 'up' || direction === 'both' || fold.boundary === 'below';
+    const towardEnd =
+      direction === 'down' || direction === 'both' || fold.boundary === 'above';
+    const next: FoldReveal = {
+      fromStart: current.fromStart + (towardStart ? count : 0),
+      fromEnd: current.fromEnd + (towardEnd ? count : 0),
+    };
+    this.windowReveal.set(fold.foldId, next);
+    this.rerender();
+  };
+
+  /**
+   * Fill custom separator slots in the light DOM from `renderWindowSeparator`.
+   * Must be called after each render when `renderWindowSeparator` is set.
+   */
+  private renderSeparators(): void {
+    const { renderWindowSeparator } = this.options;
+    const model = this.fileRenderer.getWindowModel();
+    const container = this.fileContainer;
+    if (renderWindowSeparator == null || model == null || container == null)
+      return;
+
+    // Remove previously injected custom separators.
+    for (const el of Array.from(
+      container.querySelectorAll('[data-window-file-sep]')
+    )) {
+      el.remove();
+    }
+
+    for (const [expandIndex, fold] of model.foldByExpandIndex) {
+      const customEl = renderWindowSeparator(fold);
+      if (customEl == null) continue;
+      const slotName = `window-file-sep-${expandIndex}`;
+      customEl.setAttribute('slot', slotName);
+      customEl.setAttribute('data-window-file-sep', String(expandIndex));
+      container.appendChild(customEl);
+    }
   }
 
   private mergeOptions(
@@ -1123,6 +1275,7 @@ export class File<LAnnotation = undefined, Caret = undefined> {
       this.cachedHeaderHTML = undefined;
     }
     this.fileRenderer.setOptions(getFileRendererOptions(this.options));
+    this.syncWindowState();
     this.syncInteractionOptions();
     if (lineAnnotations != null) {
       this.setLineAnnotations(lineAnnotations);
@@ -1205,9 +1358,13 @@ export class File<LAnnotation = undefined, Caret = undefined> {
           nextRenderRange
         )
       ) {
+        // When windowing is active, pass undefined so the renderer highlights
+        // the full file and the windowed path controls which lines are emitted.
+        const effectiveRenderRange =
+          this.options.window != null ? undefined : nextRenderRange;
         const fileResult = this.fileRenderer.renderFile(
           latestFile,
-          nextRenderRange
+          effectiveRenderRange
         );
         if (fileResult == null) {
           if (
@@ -1241,6 +1398,7 @@ export class File<LAnnotation = undefined, Caret = undefined> {
       this.applyBuffers(pre, nextRenderRange);
       this.injectUnsafeCSS();
       this.renderAnnotations();
+      this.renderSeparators();
       this.renderGutterUtility();
 
       this.managersDirty = true;

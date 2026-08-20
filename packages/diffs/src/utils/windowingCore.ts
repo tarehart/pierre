@@ -1,0 +1,153 @@
+/**
+ * Shared pure utilities for the windowed-diff and windowed-file engines.
+ * Both engines operate on a flat array of rows that share this minimal shape;
+ * the concrete row types (diff vs file) extend it with their own payload.
+ */
+
+export interface WindowableFlatRow {
+  /** 1-based new-file line number for this row, undefined for diff-only rows. */
+  newLine: number | undefined;
+  /** Whether the row is inside the active window. */
+  inWindow: boolean;
+  /** Whether the row is hidden behind a fold in the base (reveal-free) layout. */
+  hidden: boolean;
+  /**
+   * Whether this row represents a real change (addition or deletion). Always
+   * false for plain-file rows where every line is "unchanged".
+   */
+  isChange: boolean;
+}
+
+/** A folded run of consecutive hidden rows. */
+export interface BaseFold {
+  id: string;
+  boundary: 'above' | 'below' | 'interior';
+  /** Inclusive start index into the flat array. */
+  start: number;
+  /** Exclusive end index into the flat array. */
+  end: number;
+}
+
+/**
+ * Clamp the requested window to the file's real new-line extent.
+ * Returns an empty range (`end < start`) when nothing maps inside.
+ */
+export function clampWindow(
+  window: { start: number; end: number },
+  flat: readonly WindowableFlatRow[]
+): { start: number; end: number } {
+  let maxNewLine = 0;
+  for (const entry of flat) {
+    if (entry.newLine != null && entry.newLine > maxNewLine) {
+      maxNewLine = entry.newLine;
+    }
+  }
+  const start = Math.max(1, Math.floor(window.start));
+  const end = Math.min(maxNewLine, Math.floor(window.end));
+  if (maxNewLine === 0 || end < start || start > maxNewLine) {
+    return { start: 1, end: 0 };
+  }
+  return { start, end };
+}
+
+/**
+ * Set `hidden` on every flat row for the reveal-free base layout.
+ * Out-of-window rows are always hidden. Unchanged runs inside the window that
+ * exceed the threshold are also hidden (interior folds). Change rows and short
+ * unchanged in-window runs stay visible.
+ */
+export function markBaseHidden(
+  flat: WindowableFlatRow[],
+  empty: boolean,
+  collapsedContextThreshold: number
+): void {
+  if (empty) {
+    for (const entry of flat) entry.hidden = true;
+    return;
+  }
+  let i = 0;
+  while (i < flat.length) {
+    const entry = flat[i];
+    if (!entry.inWindow) {
+      entry.hidden = true;
+      i++;
+      continue;
+    }
+    if (entry.isChange) {
+      entry.hidden = false;
+      i++;
+      continue;
+    }
+    // Scan the maximal in-window unchanged run.
+    let j = i;
+    while (j < flat.length && flat[j].inWindow && !flat[j].isChange) j++;
+    const hideRun = j - i > collapsedContextThreshold;
+    for (let k = i; k < j; k++) flat[k].hidden = hideRun;
+    i = j;
+  }
+}
+
+/**
+ * Group maximal contiguous hidden runs into `BaseFold` descriptors. A run is
+ * cut at every visible row AND at the window boundary, so the above/below
+ * boundary fold never merges with an in-window interior fold. Fold ids are
+ * stable across reveals.
+ */
+export function enumerateFolds(
+  flat: readonly WindowableFlatRow[],
+  aboveId: string,
+  belowId: string
+): BaseFold[] {
+  const folds: BaseFold[] = [];
+  let firstInWindow = flat.length;
+  for (let i = 0; i < flat.length; i++) {
+    if (flat[i].inWindow) {
+      firstInWindow = i;
+      break;
+    }
+  }
+  let interiorCount = 0;
+  let index = 0;
+  while (index < flat.length) {
+    if (!flat[index].hidden) {
+      index++;
+      continue;
+    }
+    const start = index;
+    const startInWindow = flat[start].inWindow;
+    while (
+      index < flat.length &&
+      flat[index].hidden &&
+      flat[index].inWindow === startInWindow
+    )
+      index++;
+    const end = index;
+    const boundary: 'above' | 'below' | 'interior' = startInWindow
+      ? 'interior'
+      : start < firstInWindow
+        ? 'above'
+        : 'below';
+    const id =
+      boundary === 'above'
+        ? aboveId
+        : boundary === 'below'
+          ? belowId
+          : `interior:${interiorCount++}`;
+    folds.push({ id, boundary, start, end });
+  }
+  return folds;
+}
+
+/** The contiguous new-side extent of a run, or undefined if it has none. */
+export function newLineRange(
+  run: readonly WindowableFlatRow[]
+): [number, number] | undefined {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const entry of run) {
+    if (entry.newLine == null) continue;
+    if (entry.newLine < min) min = entry.newLine;
+    if (entry.newLine > max) max = entry.newLine;
+  }
+  return max >= min ? [min, max] : undefined;
+}

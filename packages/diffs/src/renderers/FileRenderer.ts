@@ -33,10 +33,21 @@ import { areFileRenderOptionsEqual } from '../utils/areFileRenderOptionsEqual';
 import { areFileTargetsEqual } from '../utils/areFileTargetsEqual';
 import { areRenderRangesEqual } from '../utils/areRenderRangesEqual';
 import { linesFromFileContents } from '../utils/computeFileOffsets';
+import type {
+  DiffWindow,
+  WindowFold,
+  WindowReveal,
+} from '../utils/computeWindowedDiffRows';
+import {
+  computeWindowedFileRows,
+  fileSeparatorToFold,
+  type WindowedFileResult,
+} from '../utils/computeWindowedFileRows';
 import { createAnnotationElement } from '../utils/createAnnotationElement';
 import { createContentColumn } from '../utils/createContentColumn';
 import { createFileHeaderElement } from '../utils/createFileHeaderElement';
 import { createPreElement } from '../utils/createPreElement';
+import { createSeparator } from '../utils/createSeparator';
 import { getFiletypeFromFileName } from '../utils/getFiletypeFromFileName';
 import { getHighlighterOptions } from '../utils/getHighlighterOptions';
 import { getLineAnnotationName } from '../utils/getLineAnnotationName';
@@ -113,6 +124,21 @@ export interface FileRendererOptions extends BaseCodeOptions {
   headerRenderMode?: FileHeaderRenderMode;
 }
 
+export interface FileWindowRenderState {
+  window: DiffWindow;
+  reveal: WindowReveal;
+  /** When true, separators render as empty `custom` slots the host fills. */
+  hasSeparatorRenderer: boolean;
+}
+
+/** Computed after a windowed render; null outside of windowed mode. */
+export interface FileWindowModel {
+  result: WindowedFileResult;
+  /** Routes `data-expand-index` values back to stable fold ids. */
+  expandIndexToFoldId: Map<number, string>;
+  foldByExpandIndex: Map<number, WindowFold>;
+}
+
 let instanceId = -1;
 
 export class FileRenderer<LAnnotation = undefined> {
@@ -149,6 +175,9 @@ export class FileRenderer<LAnnotation = undefined> {
     return this.renderCache?.file;
   }
 
+  private windowState: FileWindowRenderState | null = null;
+  private lastWindowModel: FileWindowModel | null = null;
+
   constructor(
     public options: FileRendererOptions = { theme: DEFAULT_THEMES },
     private annotationSlotName: (
@@ -166,6 +195,21 @@ export class FileRenderer<LAnnotation = undefined> {
 
   public setOptions(options: FileRendererOptions): void {
     this.options = options;
+  }
+
+  public setWindowState(state: FileWindowRenderState | null): void {
+    this.windowState = state;
+    if (state == null) this.lastWindowModel = null;
+  }
+
+  public getWindowModel(): FileWindowModel | null {
+    return this.lastWindowModel;
+  }
+
+  public getWindowFoldByExpandIndex(
+    expandIndex: number
+  ): WindowFold | undefined {
+    return this.lastWindowModel?.foldByExpandIndex.get(expandIndex);
   }
 
   public mergeOptions(options: Partial<FileRendererOptions>): void {
@@ -900,47 +944,132 @@ export class FileRenderer<LAnnotation = undefined> {
       rowCount++;
     }
 
-    for (
-      let lineIndex = renderRange.startingLine;
-      lineIndex < endLine;
-      lineIndex++
-    ) {
-      const lineNumber = lineIndex + 1;
+    if (this.windowState != null) {
+      // Windowed path: use computeWindowedFileRows to determine which lines to
+      // show and where separators go. The `code` sparse array is indexed by
+      // zero-based line index; windowed rows address absolute (1-based) line
+      // numbers, so code[lineNumber - 1] gives the highlighted token for each.
+      const ws = this.windowState;
+      const fileLines: string[] = this.getOrCreateLineCache(file);
+      const windowedResult = computeWindowedFileRows({
+        lines: fileLines,
+        window: ws.window,
+        reveal: ws.reveal,
+      });
+      const expandIndexToFoldId = new Map<number, string>();
+      const foldByExpandIndex = new Map<number, WindowFold>();
+      let nextExpandIndex = 0;
 
-      // Sparse array - directly indexed by lineIndex
-      const line = code[lineIndex];
-      if (line == null) {
-        const message = 'FileRenderer.processFileResult: Line doesnt exist';
-        console.error(message, {
-          name: file.name,
-          lineIndex,
-          lineNumber,
-        });
-        throw new Error(message);
+      for (const wrow of windowedResult.rows) {
+        if (wrow.kind === 'line') {
+          const lineNumber = wrow.lineNumber;
+          const lineIndex = lineNumber - 1;
+          const line = code[lineIndex];
+          if (line == null) {
+            const message = 'FileRenderer.processFileResult: Line doesnt exist';
+            console.error(message, { name: file.name, lineIndex, lineNumber });
+            throw new Error(message);
+          }
+          gutter.children.push(
+            createGutterItem('context', lineNumber, `${lineIndex}`)
+          );
+          contentArray.push(line);
+          rowCount++;
+          const annotations = this.lineAnnotations[lineNumber];
+          if (annotations != null) {
+            gutter.children.push(createGutterGap('context', 'annotation', 1));
+            contentArray.push(
+              createAnnotationElement({
+                type: 'annotation',
+                hunkIndex: 0,
+                lineIndex: lineNumber,
+                annotations: annotations.map((a) => this.annotationSlotName(a)),
+              })
+            );
+            rowCount++;
+          }
+        } else {
+          // Separator row.
+          const expandIndex = nextExpandIndex++;
+          expandIndexToFoldId.set(expandIndex, wrow.id);
+          const fold = fileSeparatorToFold(wrow);
+          foldByExpandIndex.set(expandIndex, fold);
+          const isFirst = wrow.boundary === 'above';
+          const isLast = wrow.boundary === 'below';
+          const separatorType = ws.hasSeparatorRenderer
+            ? 'custom'
+            : 'line-info';
+          const slotName = ws.hasSeparatorRenderer
+            ? `window-file-sep-${expandIndex}`
+            : undefined;
+          const content = ws.hasSeparatorRenderer
+            ? undefined
+            : `${wrow.collapsedLines} hidden line${wrow.collapsedLines === 1 ? '' : 's'}`;
+          // Gutter: one-cell gap aligning with the separator row.
+          gutter.children.push(createGutterGap('context', 'metadata', 1));
+          contentArray.push(
+            createSeparator({
+              type: separatorType,
+              content,
+              expandIndex,
+              isFirstHunk: isFirst,
+              isLastHunk: isLast,
+              slotName,
+            })
+          );
+          rowCount++;
+        }
       }
 
-      // Add gutter line number
-      gutter.children.push(
-        createGutterItem('context', lineNumber, `${lineIndex}`)
-      );
-      contentArray.push(line);
-      rowCount++;
+      this.lastWindowModel = {
+        result: windowedResult,
+        expandIndexToFoldId,
+        foldByExpandIndex,
+      };
+    } else {
+      this.lastWindowModel = null;
+      for (
+        let lineIndex = renderRange.startingLine;
+        lineIndex < endLine;
+        lineIndex++
+      ) {
+        const lineNumber = lineIndex + 1;
 
-      // Check annotations using ACTUAL line number from file
-      const annotations = this.lineAnnotations[lineNumber];
-      if (annotations != null) {
-        gutter.children.push(createGutterGap('context', 'annotation', 1));
-        contentArray.push(
-          createAnnotationElement({
-            type: 'annotation',
-            hunkIndex: 0,
-            lineIndex: lineNumber,
-            annotations: annotations.map((annotation) =>
-              this.annotationSlotName(annotation)
-            ),
-          })
+        // Sparse array - directly indexed by lineIndex
+        const line = code[lineIndex];
+        if (line == null) {
+          const message = 'FileRenderer.processFileResult: Line doesnt exist';
+          console.error(message, {
+            name: file.name,
+            lineIndex,
+            lineNumber,
+          });
+          throw new Error(message);
+        }
+
+        // Add gutter line number
+        gutter.children.push(
+          createGutterItem('context', lineNumber, `${lineIndex}`)
         );
+        contentArray.push(line);
         rowCount++;
+
+        // Check annotations using ACTUAL line number from file
+        const annotations = this.lineAnnotations[lineNumber];
+        if (annotations != null) {
+          gutter.children.push(createGutterGap('context', 'annotation', 1));
+          contentArray.push(
+            createAnnotationElement({
+              type: 'annotation',
+              hunkIndex: 0,
+              lineIndex: lineNumber,
+              annotations: annotations.map((annotation) =>
+                this.annotationSlotName(annotation)
+              ),
+            })
+          );
+          rowCount++;
+        }
       }
     }
 

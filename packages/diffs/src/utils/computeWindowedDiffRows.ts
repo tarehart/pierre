@@ -1,6 +1,13 @@
 import { DEFAULT_COLLAPSED_CONTEXT_THRESHOLD } from '../constants';
 import type { FileDiffMetadata } from '../types';
 import { type DiffLineCallbackProps, iterateOverDiff } from './iterateOverDiff';
+import {
+  clampWindow,
+  enumerateFolds,
+  markBaseHidden,
+  newLineRange,
+  type WindowableFlatRow,
+} from './windowingCore';
 
 /**
  * New-side line range of interest, one-based and inclusive on both ends.
@@ -142,14 +149,9 @@ export interface WindowFold {
   expandable: { up: boolean; down: boolean };
 }
 
-interface FlatRow {
+interface FlatRow extends WindowableFlatRow {
   row: DiffLineCallbackProps;
-  newLine: number | undefined;
   oldLine: number | undefined;
-  isChange: boolean;
-  inWindow: boolean;
-  /** Reveal-free base visibility, set by `markBaseHidden`. */
-  hidden: boolean;
 }
 
 /**
@@ -226,7 +228,7 @@ export function computeWindowedDiffRows({
   //    renumbers its neighbours), which is what lets expansion clicks route
   //    back to the right fold across re-renders.
   markBaseHidden(flat, empty, collapsedContextThreshold);
-  const folds = enumerateFolds(flat);
+  const folds = enumerateFolds(flat, WINDOW_ABOVE_ID, WINDOW_BELOW_ID);
 
   const rows: WindowedDiffRow[] = [];
   let totalCollapsed = 0;
@@ -255,138 +257,6 @@ export function computeWindowedDiffRows({
   }
 
   return { rows, appliedWindow, totalCollapsed };
-}
-
-interface BaseFold {
-  id: string;
-  boundary: 'above' | 'below' | 'interior';
-  /** Inclusive start index into `flat`. */
-  start: number;
-  /** Exclusive end index into `flat`. */
-  end: number;
-}
-
-/**
- * Set `hidden` on every flat row for the reveal-free base layout. A row is
- * hidden when it is out of window, or when it is an in-window unchanged line
- * inside a maximal in-window unchanged run longer than the threshold. Change
- * rows and short in-window unchanged runs stay visible.
- */
-function markBaseHidden(
-  flat: FlatRow[],
-  empty: boolean,
-  collapsedContextThreshold: number
-): void {
-  if (empty) {
-    for (const entry of flat) {
-      entry.hidden = true;
-    }
-    return;
-  }
-  let i = 0;
-  while (i < flat.length) {
-    const entry = flat[i];
-    if (!entry.inWindow) {
-      entry.hidden = true;
-      i += 1;
-      continue;
-    }
-    if (entry.isChange) {
-      entry.hidden = false;
-      i += 1;
-      continue;
-    }
-    // A maximal run of in-window unchanged rows: fold it only if it exceeds the
-    // threshold, so a couple of context lines are never hidden behind a fold.
-    let j = i;
-    while (j < flat.length && flat[j].inWindow && !flat[j].isChange) {
-      j += 1;
-    }
-    const runLength = j - i;
-    const hideRun = runLength > collapsedContextThreshold;
-    for (let k = i; k < j; k++) {
-      flat[k].hidden = hideRun;
-    }
-    i = j;
-  }
-}
-
-/**
- * Cut the base-hidden rows into folds. A cut happens at every visible row and
- * also at each window edge, so the out-of-window boundary fold never merges
- * with an in-window interior fold even when no visible row sits between them —
- * the above/below fold stays a distinct, author-labelable region from the
- * interior context folds. A fold is classified by content: it is `above` when
- * its rows are entirely before the window, `below` when entirely after, and
- * `interior` otherwise. Ids are position-stable across reveals: the leading
- * out-of-window fold is `WINDOW_ABOVE_ID`, the trailing one `WINDOW_BELOW_ID`,
- * and interior folds are numbered in document order.
- */
-function enumerateFolds(flat: FlatRow[]): BaseFold[] {
-  const folds: BaseFold[] = [];
-  // The first in-window row splits out-of-window folds into above vs below.
-  // With no in-window rows at all (empty selection) every fold is "above".
-  let firstInWindow = flat.length;
-  for (let i = 0; i < flat.length; i++) {
-    if (flat[i].inWindow) {
-      firstInWindow = i;
-      break;
-    }
-  }
-  let interiorCount = 0;
-  let index = 0;
-  while (index < flat.length) {
-    if (!flat[index].hidden) {
-      index += 1;
-      continue;
-    }
-    const start = index;
-    // A run extends while rows stay hidden AND stay on the same side of the
-    // window edge as the run's first row — crossing the edge starts a new fold
-    // so the boundary fold never merges with an interior one.
-    const startInWindow = flat[start].inWindow;
-    while (
-      index < flat.length &&
-      flat[index].hidden &&
-      flat[index].inWindow === startInWindow
-    ) {
-      index += 1;
-    }
-    const end = index;
-    const boundary: 'above' | 'below' | 'interior' = startInWindow
-      ? 'interior'
-      : start < firstInWindow
-        ? 'above'
-        : 'below';
-    const id =
-      boundary === 'above'
-        ? WINDOW_ABOVE_ID
-        : boundary === 'below'
-          ? WINDOW_BELOW_ID
-          : `interior:${interiorCount++}`;
-    folds.push({ id, boundary, start, end });
-  }
-  return folds;
-}
-
-/**
- * Clamp the requested window to the file's real new-line extent. An empty or
- * inverted range, or one that starts past the last line, yields an empty
- * (`end < start`) applied window.
- */
-function clampWindow(window: DiffWindow, flat: FlatRow[]): DiffWindow {
-  let maxNewLine = 0;
-  for (const entry of flat) {
-    if (entry.newLine != null && entry.newLine > maxNewLine) {
-      maxNewLine = entry.newLine;
-    }
-  }
-  const start = Math.max(1, Math.floor(window.start));
-  const end = Math.min(maxNewLine, Math.floor(window.end));
-  if (maxNewLine === 0 || end < start || start > maxNewLine) {
-    return { start: 1, end: 0 };
-  }
-  return { start, end };
 }
 
 /**
@@ -480,22 +350,4 @@ function toLineRow(entry: FlatRow): WindowedDiffLineRow {
     newLine: entry.newLine,
     oldLine: entry.oldLine,
   };
-}
-
-/** The contiguous new-side extent of a run, or undefined if it has none. */
-function newLineRange(run: FlatRow[]): [number, number] | undefined {
-  let min = Infinity;
-  let max = -Infinity;
-  for (const entry of run) {
-    if (entry.newLine == null) {
-      continue;
-    }
-    if (entry.newLine < min) {
-      min = entry.newLine;
-    }
-    if (entry.newLine > max) {
-      max = entry.newLine;
-    }
-  }
-  return max >= min ? [min, max] : undefined;
 }

@@ -2,6 +2,7 @@ import {
   DEFAULT_THEMES,
   DIFFS_TAG_NAME,
   type DiffsThemeNames,
+  type DiffWindow,
   File,
   type FileContents,
   FileDiff,
@@ -21,6 +22,7 @@ import {
   VirtualizedFile,
   VirtualizedFileDiff,
   Virtualizer,
+  type WindowFold,
 } from '@pierre/diffs';
 import { Editor } from '@pierre/diffs/edit';
 import type { WorkerPoolManager } from '@pierre/diffs/worker';
@@ -1330,6 +1332,153 @@ if (lagRadarCheckbox != null && radar != null) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// Windowed Demo
+// Demonstrates the window option on FileDiff (diff windowing) and File (plain
+// file windowing) side by side, with interactive expand and a custom separator.
+// ---------------------------------------------------------------------------
+
+function renderWindowedDemo() {
+  const wrapper = document.getElementById('wrapper');
+  if (wrapper == null) return;
+  cleanupInstances(wrapper);
+
+  const themeType = getThemeType();
+  const oldFile: FileContents = {
+    name: 'highlighter.ts',
+    contents: FILE_OLD,
+    cacheKey: 'windowed-demo-old',
+  };
+  const newFile: FileContents = {
+    name: 'highlighter.ts',
+    contents: FILE_NEW,
+    cacheKey: 'windowed-demo-new',
+  };
+  const fileDiff = parseDiffFromFile(oldFile, newFile);
+  // Show lines 40-80 of the diff as the initial window.
+  const diffWindow: DiffWindow = { start: 40, end: 80 };
+  // Show lines 200-260 of the plain file.
+  const fileWindow: DiffWindow = { start: 200, end: 260 };
+
+  // --- Shared separator renderer ---
+  function makeSeparatorEl(fold: WindowFold): HTMLElement {
+    const btn = document.createElement('button');
+    const label =
+      fold.boundary === 'interior'
+        ? `▼ ${fold.collapsedLines} unchanged lines`
+        : fold.boundary === 'above'
+          ? `▲ ${fold.collapsedLines} hidden lines${fold.containsChanges ? ' (contains changes)' : ''}`
+          : `▼ ${fold.collapsedLines} hidden lines${fold.containsChanges ? ' (contains changes)' : ''}`;
+    btn.textContent = label;
+    btn.style.cssText =
+      'all:unset;cursor:pointer;font:var(--diffs-font-size,13px)/1 var(--diffs-font-family,monospace);' +
+      'color:var(--diffs-fg,currentcolor);opacity:0.6;padding:2px 8px;' +
+      'text-decoration:underline dotted;';
+    return btn;
+  }
+
+  // --- Section heading helper ---
+  function makeHeading(text: string): HTMLElement {
+    const h = document.createElement('h3');
+    h.textContent = text;
+    h.style.cssText =
+      'font:bold 14px system-ui,sans-serif;margin:16px 0 4px;color:var(--diffs-fg,currentcolor)';
+    return h;
+  }
+
+  // ── Windowed diff ──────────────────────────────────────────────────────────
+  wrapper.appendChild(makeHeading('Windowed FileDiff — lines 40–80 (split)'));
+
+  let diffWindowState = { ...diffWindow };
+  const diffContainer = document.createElement(DIFFS_TAG_NAME);
+  wrapper.appendChild(diffContainer);
+
+  const diffInstance = new FileDiff<LineCommentMetadata>({
+    theme: DEMO_THEME,
+    themeType,
+    diffStyle: 'split',
+    window: diffWindowState,
+    onWindowExpand(fold) {
+      // Expand 20 lines per click; boundary folds widen the window.
+      const step = 20;
+      if (fold.boundary === 'above') {
+        diffWindowState = {
+          start: Math.max(1, diffWindowState.start - step),
+          end: diffWindowState.end,
+        };
+      } else if (fold.boundary === 'below') {
+        diffWindowState = {
+          start: diffWindowState.start,
+          end: diffWindowState.end + step,
+        };
+      } else {
+        return false; // let interior folds peel in place
+      }
+      diffInstance.setOptions({
+        ...diffInstance.options,
+        window: diffWindowState,
+      });
+      diffInstance.render({
+        fileDiff,
+        fileContainer: diffContainer,
+        forceRender: true,
+      });
+      return true;
+    },
+    renderWindowSeparator(fold) {
+      return makeSeparatorEl(fold);
+    },
+  });
+  diffInstance.render({ fileDiff, fileContainer: diffContainer });
+  diffInstances.push(diffInstance);
+
+  // ── Windowed file ──────────────────────────────────────────────────────────
+  wrapper.appendChild(makeHeading('Windowed File — lines 200–260'));
+
+  let fileWindowState = { ...fileWindow };
+  const fileContainer2 = document.createElement(DIFFS_TAG_NAME);
+  wrapper.appendChild(fileContainer2);
+
+  const fileInstance = new File<LineCommentMetadata>({
+    theme: DEMO_THEME,
+    themeType,
+    disableFileHeader: false,
+    window: fileWindowState,
+    onWindowExpand(fold) {
+      const step = 20;
+      if (fold.boundary === 'above') {
+        fileWindowState = {
+          start: Math.max(1, fileWindowState.start - step),
+          end: fileWindowState.end,
+        };
+      } else {
+        fileWindowState = {
+          start: fileWindowState.start,
+          end: fileWindowState.end + step,
+        };
+      }
+      fileInstance.setOptions({
+        ...fileInstance.options,
+        window: fileWindowState,
+      });
+      fileInstance.render({
+        file: newFile,
+        fileContainer: fileContainer2,
+        forceRender: true,
+      });
+      return true;
+    },
+    renderWindowSeparator(fold) {
+      return makeSeparatorEl(fold);
+    },
+  });
+  fileInstance.render({ file: newFile, fileContainer: fileContainer2 });
+  fileInstances.push(fileInstance);
+}
+
+const renderWindowedButton = document.getElementById('render-windowed');
+renderWindowedButton?.addEventListener('click', renderWindowedDemo);
 
 function createToggle(
   labelText: string,

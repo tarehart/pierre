@@ -455,6 +455,23 @@ export interface BaseDiffOptions extends BaseCodeOptions {
   loadDiffFiles?: FileDiffContentsLoader;
   // Auto-expand collapsed context at or below this size.
   collapsedContextThreshold?: number; // 2 is default
+  /**
+   * Only applies when a diff is rendered with a `window`. Number of unchanged
+   * context lines to keep on each side of a change inside the window, mirroring
+   * a conventional diff's `-U<n>` context (jsdiff's `context`, which shapes the
+   * non-windowed hunks). An unchanged run between changes shows in full when it
+   * is `<= 2 * windowContextLines`; longer runs keep `windowContextLines` at
+   * each edge and fold only the middle into an interior separator. Distinct from
+   * `collapsedContextThreshold`, which is an all-or-nothing collapse gate for
+   * the non-windowed path.
+   *
+   * In windowed mode this — not `parseDiffOptions.context` — is the context
+   * knob. A non-partial diff retains the full file regardless of the `context`
+   * jsdiff generated the patch with, and the windowed engine re-folds from that
+   * full content, so `parseDiffOptions.context` has no effect once a `window` is
+   * set (it only shapes the non-windowed hunk layout).
+   */
+  windowContextLines?: number; // DEFAULT_WINDOW_CONTEXT_LINES is default
   // NOTE(amadeus): 'word-alt' attempts to join word regions that are separated
   // by a single character
   lineDiffType?: LineDiffTypes; // 'word-alt' is default
@@ -466,6 +483,9 @@ export interface BaseDiffOptions extends BaseCodeOptions {
   /**
    * Options forwarded to the underlying diff algorithm when computing diffs
    * from file contents (oldFile/newFile). Has no effect on pre-parsed patches.
+   * Note: its `context` (context lines around each change) shapes only the
+   * non-windowed hunk layout; when a `window` is set, context inside the window
+   * is governed by `windowContextLines` instead.
    */
   parseDiffOptions?: CreatePatchOptionsNonabortable;
 }
@@ -473,7 +493,13 @@ export interface BaseDiffOptions extends BaseCodeOptions {
 export type BaseDiffOptionsWithDefaults = Required<
   Omit<
     BaseDiffOptions,
-    'unsafeCSS' | 'preferredHighlighter' | 'parseDiffOptions' | 'loadDiffFiles'
+    | 'unsafeCSS'
+    | 'preferredHighlighter'
+    | 'parseDiffOptions'
+    | 'loadDiffFiles'
+    // Windowing-only knob, read directly from options by the renderer's
+    // windowed path; not part of the always-defaulted core diff options.
+    | 'windowContextLines'
   >
 >;
 

@@ -59,7 +59,7 @@ export interface IterateWindowedDiffProps {
   diff: FileDiffMetadata;
   window: DiffWindow;
   diffStyle?: 'unified' | 'split';
-  collapsedContextThreshold?: number;
+  contextLines?: number;
   reveal?: WindowReveal;
   callback: DiffLineCallback;
   /**
@@ -94,7 +94,7 @@ export function iterateWindowedDiff({
   diff,
   window,
   diffStyle = 'unified',
-  collapsedContextThreshold,
+  contextLines,
   reveal,
   callback,
   onModel,
@@ -103,7 +103,7 @@ export function iterateWindowedDiff({
     diff,
     window,
     diffStyle,
-    collapsedContextThreshold,
+    contextLines,
     reveal,
   });
 

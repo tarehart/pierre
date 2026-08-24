@@ -1,4 +1,4 @@
-import { DEFAULT_COLLAPSED_CONTEXT_THRESHOLD } from '../constants';
+import { DEFAULT_WINDOW_CONTEXT_LINES } from '../constants';
 import type { FileDiffMetadata } from '../types';
 import { type DiffLineCallbackProps, iterateOverDiff } from './iterateOverDiff';
 import {
@@ -55,12 +55,14 @@ export interface ComputeWindowedDiffRowsProps {
    */
   diffStyle?: 'unified' | 'split';
   /**
-   * Long unchanged runs *inside* the window collapse when they exceed this many
-   * lines. Runs at or below it stay expanded so a couple of context lines are
-   * never hidden behind a separator. Defaults to
-   * `DEFAULT_COLLAPSED_CONTEXT_THRESHOLD`.
+   * Unchanged context lines kept on each side of a change *inside* the window,
+   * like a conventional diff's `-U<n>`. An unchanged run between two changes
+   * shows in full when its length is `<= 2 * contextLines`; a longer run keeps
+   * `contextLines` at each edge and folds only the middle into an interior
+   * separator. A run touching the window edge keeps context only on its
+   * change-facing side. Defaults to `DEFAULT_WINDOW_CONTEXT_LINES`.
    */
-  collapsedContextThreshold?: number;
+  contextLines?: number;
   /** Reader-driven reveals accumulated from separator clicks. */
   reveal?: WindowReveal;
 }
@@ -169,7 +171,7 @@ export function computeWindowedDiffRows({
   diff,
   window,
   diffStyle = 'unified',
-  collapsedContextThreshold = DEFAULT_COLLAPSED_CONTEXT_THRESHOLD,
+  contextLines = DEFAULT_WINDOW_CONTEXT_LINES,
   reveal = createEmptyReveal(),
 }: ComputeWindowedDiffRowsProps): WindowedDiffResult {
   if (diff.isPartial) {
@@ -227,7 +229,7 @@ export function computeWindowedDiffRows({
   //    reveals lines (a fold that shrinks or fully opens keeps its id and never
   //    renumbers its neighbours), which is what lets expansion clicks route
   //    back to the right fold across re-renders.
-  markBaseHidden(flat, empty, collapsedContextThreshold);
+  markBaseHidden(flat, empty, contextLines);
   const folds = enumerateFolds(flat, WINDOW_ABOVE_ID, WINDOW_BELOW_ID);
 
   const rows: WindowedDiffRow[] = [];

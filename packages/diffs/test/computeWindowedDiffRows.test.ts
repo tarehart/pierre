@@ -47,7 +47,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff,
       window: { start: 25, end: 35 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
 
     // The line-30 change is inside the window and is kept as a paired row.
@@ -69,7 +69,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff: makeDiff(),
       window: { start: 25, end: 35 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     const seps = separators(result);
     const above = seps.find((s) => s.id === WINDOW_ABOVE_ID);
@@ -84,7 +84,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff: makeDiff(),
       window: { start: 25, end: 35 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     const seps = separators(result);
     const above = seps.find((s) => s.id === WINDOW_ABOVE_ID);
@@ -102,7 +102,9 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff: makeDiff(),
       window: { start: 25, end: 35 },
-      // Default threshold (2) folds the 25-29 and 31-35 unchanged runs.
+      // With 1 context line, the 5-line 25-29 and 31-35 runs each keep one line
+      // at each end and fold their middle into an interior separator.
+      contextLines: 1,
     });
     const interior = separators(result).filter(
       (s) => s.boundary === 'interior'
@@ -119,7 +121,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff: makeDiff(),
       window: { start: 25, end: 35 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     // Every in-window unchanged line renders; no interior fold.
     expect(separators(result).some((s) => s.boundary === 'interior')).toBe(
@@ -130,11 +132,50 @@ describe('computeWindowedDiffRows', () => {
     ]);
   });
 
+  test('interior context: keeps contextLines around each change, folds only the middle', () => {
+    // Whole-file window, but the diff view still hugs each change (new-lines 5
+    // and 30) with 3 context lines and folds only the long unchanged middle —
+    // the conventional git -U3 look, and the fix for the expander abutting a
+    // change with no context between them.
+    const result = computeWindowedDiffRows({
+      diff: makeDiff(),
+      window: { start: 1, end: 40 },
+      contextLines: 3,
+    });
+    const visible = visibleNewLines(result);
+    // 3 context lines hug each change on both sides.
+    for (const n of [2, 3, 4, 5, 6, 7, 8, 27, 28, 29, 30, 31, 32, 33]) {
+      expect(visible).toContain(n);
+    }
+    // The long unchanged middle between the two changes is folded away.
+    for (const n of [12, 15, 20]) {
+      expect(visible).not.toContain(n);
+    }
+    // At least one interior separator carries the folded middle.
+    expect(separators(result).some((s) => s.boundary === 'interior')).toBe(
+      true
+    );
+  });
+
+  test('an unchanged gap no larger than 2*contextLines stays fully expanded', () => {
+    // Window around a single change with only a few unchanged lines on each
+    // side: the context margins cover the whole run, so nothing folds.
+    const result = computeWindowedDiffRows({
+      diff: makeDiff(),
+      window: { start: 2, end: 8 },
+      contextLines: 3,
+    });
+    expect(separators(result).some((s) => s.boundary === 'interior')).toBe(
+      false
+    );
+    expect(visibleNewLines(result)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+  });
+
   test('a whole-file window collapses nothing', () => {
     const result = computeWindowedDiffRows({
       diff: makeDiff(),
       window: { start: 1, end: 40 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     expect(separators(result)).toHaveLength(0);
     expect(result.totalCollapsed).toBe(0);
@@ -147,7 +188,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff: makeDiff(),
       window: { start: 1, end: 10 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     expect(separators(result).some((s) => s.boundary === 'above')).toBe(false);
     const below = separators(result).find((s) => s.boundary === 'below');
@@ -159,7 +200,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff: makeDiff(),
       window: { start: 15, end: 20 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     const seps = separators(result);
     // Both changes are outside this window, one above and one below.
@@ -196,7 +237,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff,
       window: { start: 25, end: 35 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
       reveal,
     });
     const visible = visibleNewLines(result);
@@ -220,7 +261,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff,
       window: { start: 25, end: 35 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
       reveal,
     });
     expect(separators(result).some((s) => s.id === WINDOW_BELOW_ID)).toBe(
@@ -240,7 +281,7 @@ describe('computeWindowedDiffRows', () => {
     const result = computeWindowedDiffRows({
       diff,
       window: { start: 15, end: 25 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     // The pure deletion (old line 20) must be kept, rendered between its
     // surrounding new-side lines, not stranded in a fold.
@@ -264,7 +305,7 @@ describe('computeWindowedDiffRows', () => {
       diff,
       diffStyle: 'split',
       window: { start: 25, end: 35 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     // The line-30 change renders once in split (both sides on one row) versus
     // twice in unified.
@@ -277,7 +318,7 @@ describe('computeWindowedDiffRows', () => {
       diff,
       diffStyle: 'unified',
       window: { start: 25, end: 35 },
-      collapsedContextThreshold: 50,
+      contextLines: 50,
     });
     const unifiedChangeRows = unified.rows.filter(
       (row) => row.kind === 'line' && row.row.type === 'change'

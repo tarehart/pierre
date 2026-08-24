@@ -82,7 +82,7 @@ describe('renderWindowedDiffHTML', () => {
       options: {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       },
     });
     expect(renderedLineNumbers(html)).toContain(1);
@@ -98,7 +98,7 @@ describe('renderWindowedDiffHTML', () => {
       options: {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       },
     });
     expect(renderedLineNumbers(base)).not.toContain(24);
@@ -113,7 +113,7 @@ describe('renderWindowedDiffHTML', () => {
       options: {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       },
     });
     const lines = renderedLineNumbers(expanded);
@@ -131,7 +131,7 @@ describe('renderWindowedDiffHTML', () => {
       options: {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       },
     });
     expect(separatorCount(html)).toBe(0);

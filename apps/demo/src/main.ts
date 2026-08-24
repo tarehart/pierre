@@ -1356,8 +1356,11 @@ function renderWindowedDemo() {
     cacheKey: 'windowed-demo-new',
   };
   const fileDiff = parseDiffFromFile(oldFile, newFile);
-  // Show lines 40-80 of the diff as the initial window.
-  const diffWindow: DiffWindow = { start: 40, end: 80 };
+  // Show a change-dense region of the diff as the initial window. This range
+  // has clustered edits separated by short unchanged runs, so the interior
+  // context folding (see collapsedContextThreshold below) is visible without
+  // collapsing nearly everything.
+  const diffWindow: DiffWindow = { start: 350, end: 430 };
   // Show lines 200-260 of the plain file.
   const fileWindow: DiffWindow = { start: 200, end: 260 };
 
@@ -1388,7 +1391,9 @@ function renderWindowedDemo() {
   }
 
   // ── Windowed diff ──────────────────────────────────────────────────────────
-  wrapper.appendChild(makeHeading('Windowed FileDiff — lines 40–80 (split)'));
+  wrapper.appendChild(
+    makeHeading('Windowed FileDiff — lines 350–430 (split, 8 context lines)')
+  );
 
   let diffWindowState = { ...diffWindow };
   const diffContainer = document.createElement(DIFFS_TAG_NAME);
@@ -1399,6 +1404,10 @@ function renderWindowedDemo() {
     themeType,
     diffStyle: 'split',
     window: diffWindowState,
+    // Keep 8 unchanged context lines on each side of a change inside the
+    // window (git -U8-style); only the middle of longer unchanged runs folds
+    // to an interior separator.
+    windowContextLines: 8,
     onWindowExpand(fold) {
       // Expand 20 lines per click; boundary folds widen the window.
       const step = 20;

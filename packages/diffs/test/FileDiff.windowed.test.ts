@@ -58,7 +58,7 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
         window: { start: 25, end: 35 },
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       });
       instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
       await waitForRenderedCode(fileContainer);
@@ -85,7 +85,7 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
         window: { start: 25, end: 35 },
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       });
       instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
       await waitForRenderedCode(fileContainer);
@@ -125,7 +125,7 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
         window: { start: 25, end: 35 },
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       });
       instance.render({ fileContainer, fileDiff });
       await waitForRenderedCode(fileContainer);
@@ -135,7 +135,7 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
         disableFileHeader: true,
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       });
       // The React hook passes forceRender when options change (areOptionsEqual
       // is false); mirror that here so the option-driven repaint happens.
@@ -162,7 +162,7 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
         diffStyle: 'split',
         hunkSeparators: 'line-info',
         window: { start: 25, end: 35 },
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
       });
       instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
       await waitForRenderedCode(fileContainer);
@@ -208,7 +208,7 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
         window: { start: 25, end: 35 },
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
         // Return true to claim the click: the host would widen the window; here
         // we just record it and assert the built-in reveal did NOT run.
         onWindowExpand: (fold) => {
@@ -252,7 +252,7 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
         diffStyle: 'unified',
         hunkSeparators: 'line-info',
         window: { start: 25, end: 35 },
-        collapsedContextThreshold: 50,
+        windowContextLines: 50,
         renderWindowSeparator: (fold) => {
           const el = document.createElement('button');
           el.setAttribute('data-custom-fold', fold.boundary);

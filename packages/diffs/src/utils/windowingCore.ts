@@ -52,19 +52,29 @@ export function clampWindow(
 
 /**
  * Set `hidden` on every flat row for the reveal-free base layout.
- * Out-of-window rows are always hidden. Unchanged runs inside the window that
- * exceed the threshold are also hidden (interior folds). Change rows and short
- * unchanged in-window runs stay visible.
+ *
+ * Out-of-window rows are always hidden (the above/below boundary folds). Inside
+ * the window, an unchanged run keeps `contextLines` visible at each end and
+ * folds only its middle into an interior separator — mirroring a conventional
+ * diff's `-U<n>` context. Change rows are always visible.
+ *
+ * Both a change and the window edge anchor context: a run is bounded by one or
+ * the other on each side, and either way its edge stays visible. So a run shows
+ * in full when its length is `<= 2 * contextLines` (the two margins meet), and a
+ * window containing no changes still shows its edges (you asked to see that
+ * range). Pass a non-finite value (e.g. `Infinity`) to disable interior folding
+ * entirely and keep every in-window line — the plain-file engine relies on this.
  */
 export function markBaseHidden(
   flat: WindowableFlatRow[],
   empty: boolean,
-  collapsedContextThreshold: number
+  contextLines: number
 ): void {
   if (empty) {
     for (const entry of flat) entry.hidden = true;
     return;
   }
+  const neverFold = !Number.isFinite(contextLines);
   let i = 0;
   while (i < flat.length) {
     const entry = flat[i];
@@ -78,11 +88,18 @@ export function markBaseHidden(
       i++;
       continue;
     }
-    // Scan the maximal in-window unchanged run.
+    // Scan the maximal in-window unchanged run [i, j). It is bounded by a change
+    // or the window edge on each side; both anchor `contextLines` of visible
+    // context, so keep that many lines at each end and fold the middle.
     let j = i;
     while (j < flat.length && flat[j].inWindow && !flat[j].isChange) j++;
-    const hideRun = j - i > collapsedContextThreshold;
-    for (let k = i; k < j; k++) flat[k].hidden = hideRun;
+    for (let k = i; k < j; k++) {
+      const fromStart = k - i;
+      const fromEnd = j - 1 - k;
+      const visible =
+        neverFold || fromStart < contextLines || fromEnd < contextLines;
+      flat[k].hidden = !visible;
+    }
     i = j;
   }
 }

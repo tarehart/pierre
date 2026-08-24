@@ -7,6 +7,7 @@ import {
   DEFAULT_RENDER_RANGE,
   DEFAULT_THEMES,
   DEFAULT_TOKENIZE_MAX_LENGTH,
+  DEFAULT_WINDOW_CONTEXT_LINES,
 } from '../constants';
 import type { TextDocument } from '../editor/textDocument';
 import { areLanguagesAttached } from '../highlighter/languages/areLanguagesAttached';
@@ -2102,7 +2103,11 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         diff: fileDiff,
         window: windowState.window,
         diffStyle,
-        collapsedContextThreshold,
+        // Windowing keeps `windowContextLines` context around each change
+        // (git `-U<n>`-style), distinct from the non-windowed all-or-nothing
+        // `collapsedContextThreshold` gate.
+        contextLines:
+          this.options.windowContextLines ?? DEFAULT_WINDOW_CONTEXT_LINES,
         reveal: windowState.reveal,
         callback: diffRowCallback,
         onModel: (model, expandIndexToFoldId) => {
@@ -2647,29 +2652,55 @@ function pushSeparator(
     typeof collapsedLines === 'number'
       ? getModifiedLinesString(collapsedLines)
       : 'More unchanged context may be available';
-  context.pushToGutter(
-    type,
-    createSeparator({
-      type: separatorType,
-      content,
-      expandIndex,
-      chunked,
-      slotName,
-      isFirstHunk,
-      isLastHunk,
-    })
-  );
-  linesAST.push(
-    createSeparator({
-      type: separatorType,
-      content,
-      expandIndex,
-      chunked,
-      slotName,
-      isFirstHunk,
-      isLastHunk,
-    })
-  );
+  if (separatorType === 'custom') {
+    // A host-rendered windowed separator (`renderWindowSeparator`) must live in
+    // the content column, not the gutter: its label/affordance would overflow
+    // the narrow gutter, and a single slotted host element is assigned to the
+    // first matching slot — which would be the gutter's. Give the gutter an
+    // empty aligned cell and put the slot (with content and the expand
+    // affordance) in the content column, mirroring how FileRenderer lays out a
+    // windowed file separator. The built-in separators below still span both
+    // columns as before.
+    context.pushToGutter(
+      type,
+      createSeparator({ type: 'custom', isFirstHunk, isLastHunk })
+    );
+    linesAST.push(
+      createSeparator({
+        type: separatorType,
+        content,
+        expandIndex,
+        chunked,
+        slotName,
+        isFirstHunk,
+        isLastHunk,
+      })
+    );
+  } else {
+    context.pushToGutter(
+      type,
+      createSeparator({
+        type: separatorType,
+        content,
+        expandIndex,
+        chunked,
+        slotName,
+        isFirstHunk,
+        isLastHunk,
+      })
+    );
+    linesAST.push(
+      createSeparator({
+        type: separatorType,
+        content,
+        expandIndex,
+        chunked,
+        slotName,
+        isFirstHunk,
+        isLastHunk,
+      })
+    );
+  }
   if (type !== 'additions') {
     context.incrementRowCount(1);
   }

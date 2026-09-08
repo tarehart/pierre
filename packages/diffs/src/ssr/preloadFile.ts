@@ -13,6 +13,13 @@ export type PreloadFileOptions<LAnnotation, Caret> = {
   file: FileContents;
   options?: FileOptions<LAnnotation, Caret>;
   annotations?: LineAnnotation<LAnnotation>[];
+  /**
+   * A pre-configured renderer to render with instead of constructing one from
+   * `options`. Used by `renderWindowedFileHTML`, which must set the renderer's
+   * window state before rendering; the wrap/serialize path is otherwise
+   * identical. Internal — not part of the public preloadFile surface.
+   */
+  renderer?: FileRenderer<LAnnotation>;
 };
 
 export interface PreloadedFileResult<LAnnotation, Caret> {
@@ -22,27 +29,43 @@ export interface PreloadedFileResult<LAnnotation, Caret> {
   prerenderedHTML: string;
 }
 
-export async function preloadFile<LAnnotation = undefined, Caret = undefined>({
+/**
+ * Render a file to hydratable HTML: highlighted markup wrapped with its CSS,
+ * theme styles, and the `data-dehydrated` marker `File.hydrate()` looks for.
+ * Shared by `preloadFile` (constructs its own renderer from `options`) and
+ * `renderWindowedFileHTML` (hands in a renderer already in windowed mode), so
+ * both entry points produce hydratable output through one code path instead
+ * of each maintaining their own copy of the wrapper.
+ */
+export async function preloadFileHTML<LAnnotation, Caret>({
   file,
   options,
   annotations,
-}: PreloadFileOptions<LAnnotation, Caret>): Promise<
-  PreloadedFileResult<LAnnotation, Caret>
-> {
-  const fileRenderer = new FileRenderer<LAnnotation>({
-    ...options,
-    // Match the client's option snapshot: token callbacks imply the
-    // transformer, so server markup hydrates into identical client renders.
-    useTokenTransformer: shouldUseTokenTransformer(options),
-    headerRenderMode:
-      options?.renderCustomHeader != null ? 'custom' : 'default',
-  });
+  renderer: providedRenderer,
+}: PreloadFileOptions<LAnnotation, Caret>): Promise<string> {
+  const fileRenderer =
+    providedRenderer ??
+    new FileRenderer<LAnnotation>({
+      ...options,
+      // Match the client's option snapshot: token callbacks imply the
+      // transformer, so server markup hydrates into identical client renders.
+      useTokenTransformer: shouldUseTokenTransformer(options),
+      headerRenderMode:
+        options?.renderCustomHeader != null ? 'custom' : 'default',
+    });
 
-  // Set line annotations if provided
-  if (annotations !== undefined && annotations.length > 0) {
+  if (
+    providedRenderer == null &&
+    annotations != null &&
+    annotations.length > 0
+  ) {
     fileRenderer.setLineAnnotations(annotations);
   }
 
+  // asyncRender awaits the highlighter (initializing it if needed) instead of
+  // reading FileRenderer.renderFile's synchronous, possibly-still-pending
+  // result: on a cold process renderFile returns undefined until a background
+  // asyncHighlight resolves, which asyncRender is what actually drives.
   const fileResult = await fileRenderer.asyncRender(file);
   const children = [createStyleElement(fileResult.css, true)];
 
@@ -66,10 +89,20 @@ export async function preloadFile<LAnnotation = undefined, Caret = undefined>({
   code.properties['data-dehydrated'] = '';
   children.push(code);
 
+  return renderHTML(children);
+}
+
+export async function preloadFile<LAnnotation = undefined, Caret = undefined>({
+  file,
+  options,
+  annotations,
+}: PreloadFileOptions<LAnnotation, Caret>): Promise<
+  PreloadedFileResult<LAnnotation, Caret>
+> {
   return {
     file,
     options,
     annotations,
-    prerenderedHTML: renderHTML(children),
+    prerenderedHTML: await preloadFileHTML({ file, options, annotations }),
   };
 }

@@ -157,6 +157,37 @@ describe('computeWindowedDiffRows', () => {
     );
   });
 
+  test('a run touching the window edge keeps context only on its change-facing side', () => {
+    // 200-line file, single change at new-line 5, window deep in the unchanged
+    // tail (100-160). The run [1..160] inside the window before line 160 (the
+    // window's own end) has no change on either side within [100,160], so BOTH
+    // edges here are the window boundary, not a change. Per this function's own
+    // doc ("A run touching the window edge keeps context only on its
+    // change-facing side"), a window edge must not anchor context the way a
+    // change does: the full [100,160] range was explicitly requested, so it
+    // should render in full rather than folding an interior chunk out of it.
+    const oldLines200 = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`);
+    const newLines200 = [...oldLines200];
+    newLines200[4] = 'line 5 CHANGED';
+    const diff200 = parseDiffFromFile(
+      { name: 'f.txt', contents: oldLines200.join('\n') + '\n' },
+      { name: 'f.txt', contents: newLines200.join('\n') + '\n' }
+    );
+    const result = computeWindowedDiffRows({
+      diff: diff200,
+      window: { start: 100, end: 160 },
+      contextLines: 3,
+    });
+    // The whole requested window has no change inside it, so nothing should
+    // fold: every line from 100 to 160 must render.
+    expect(visibleNewLines(result)).toEqual(
+      Array.from({ length: 61 }, (_, i) => 100 + i)
+    );
+    expect(separators(result).some((s) => s.boundary === 'interior')).toBe(
+      false
+    );
+  });
+
   test('an unchanged gap no larger than 2*contextLines stays fully expanded', () => {
     // Window around a single change with only a few unchanged lines on each
     // side: the context margins cover the whole run, so nothing folds.

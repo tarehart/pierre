@@ -75,6 +75,53 @@ describe('FileDiff windowed rendering (React SPA path)', () => {
     }
   });
 
+  test('windowContextLines actually reaches the renderer: a small vs. large value changes what folds', async () => {
+    // OLD_LINES has a change only at new-line 5, so the run from line 8 to the
+    // window end is entirely unchanged. A window wide enough (1-40) that this
+    // long unchanged tail can fold with a small windowContextLines, but stays
+    // fully expanded with a large one, distinguishes the option's value from
+    // DEFAULT_WINDOW_CONTEXT_LINES (3) the way the 11-line windows in the tests
+    // above cannot (3 and 50 render identically there).
+    async function renderWithContextLines(
+      windowContextLines: number
+    ): Promise<number[]> {
+      const { cleanup } = installDom();
+      let instance: FileDiff<string> | undefined;
+      try {
+        const fileContainer = document.createElement('div');
+        instance = new FileDiff<string>({
+          disableFileHeader: true,
+          diffStyle: 'unified',
+          hunkSeparators: 'line-info',
+          window: { start: 1, end: 40 },
+          windowContextLines,
+        });
+        instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
+        await waitForRenderedCode(fileContainer);
+        return renderedLineNumbers(fileContainer);
+      } finally {
+        instance?.cleanUp();
+        cleanup();
+      }
+    }
+
+    // With 3 lines of context, the unchanged run after line 5's context
+    // (lines 9-40, well past 2*3=6 from the next change... but there is no
+    // next change before line 30) folds its middle into an interior separator.
+    const small = await renderWithContextLines(3);
+    // With generous context, the same run stays fully expanded.
+    const large = await renderWithContextLines(20);
+
+    // Both configurations still show line 30's change and its own context.
+    expect(small).toContain(30);
+    expect(large).toContain(30);
+    // A mid-run line far from both changes (line 15) only survives with the
+    // larger context budget — this is what proves windowContextLines is
+    // actually reaching the renderer rather than being silently dropped.
+    expect(small).not.toContain(15);
+    expect(large).toContain(15);
+  });
+
   test('clicking a fold (via expandHunk) reveals more context and preserves the window', async () => {
     const { cleanup } = installDom();
     let instance: FileDiff<string> | undefined;

@@ -33,6 +33,7 @@ export function getDiffHunksRendererOptions<LAnnotation, Caret>(
     lineDiffType: options?.lineDiffType,
     maxLineDiffLength: options?.maxLineDiffLength,
     expansionLineCount: options?.expansionLineCount,
+    windowContextLines: options?.windowContextLines,
     headerRenderMode:
       options?.renderCustomHeader != null ? 'custom' : 'default',
   };

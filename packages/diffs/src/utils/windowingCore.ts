@@ -58,12 +58,16 @@ export function clampWindow(
  * folds only its middle into an interior separator — mirroring a conventional
  * diff's `-U<n>` context. Change rows are always visible.
  *
- * Both a change and the window edge anchor context: a run is bounded by one or
- * the other on each side, and either way its edge stays visible. So a run shows
- * in full when its length is `<= 2 * contextLines` (the two margins meet), and a
- * window containing no changes still shows its edges (you asked to see that
- * range). Pass a non-finite value (e.g. `Infinity`) to disable interior folding
- * entirely and keep every in-window line — the plain-file engine relies on this.
+ * Only a change anchors context; the window edge does not. A run touching the
+ * window edge keeps `contextLines` on its change-facing side only (if any) and
+ * shows nothing extra on its window-edge side, because that side was already
+ * fully inside the requested range — folding part of it would hide lines the
+ * caller explicitly asked to see. A run bounded by changes on both sides shows
+ * in full when its length is `<= 2 * contextLines` (the two margins meet); a
+ * run bounded by the window edge on both sides (the window contains no
+ * changes at all) never folds, since neither side has a change to hug. Pass a
+ * non-finite value (e.g. `Infinity`) to disable interior folding entirely and
+ * keep every in-window line — the plain-file engine relies on this.
  */
 export function markBaseHidden(
   flat: WindowableFlatRow[],
@@ -88,16 +92,29 @@ export function markBaseHidden(
       i++;
       continue;
     }
-    // Scan the maximal in-window unchanged run [i, j). It is bounded by a change
-    // or the window edge on each side; both anchor `contextLines` of visible
-    // context, so keep that many lines at each end and fold the middle.
+    // Scan the maximal in-window unchanged run [i, j). Figure out whether each
+    // edge is bounded by a real change (which anchors contextLines of visible
+    // context) or by the window edge itself (which anchors nothing extra: the
+    // range up to that edge was already requested in full).
     let j = i;
     while (j < flat.length && flat[j].inWindow && !flat[j].isChange) j++;
+    const startsAtChange =
+      i > 0 && flat[i - 1].inWindow && flat[i - 1].isChange;
+    const endsAtChange =
+      j < flat.length && flat[j].inWindow && flat[j].isChange;
+    // A run with no change on either side (the window contains no changes at
+    // all) has nothing to anchor a fold against — the whole range was
+    // requested explicitly, so show it in full rather than hiding a middle
+    // chunk that borders no change.
+    const noAnchor = !startsAtChange && !endsAtChange;
     for (let k = i; k < j; k++) {
       const fromStart = k - i;
       const fromEnd = j - 1 - k;
       const visible =
-        neverFold || fromStart < contextLines || fromEnd < contextLines;
+        neverFold ||
+        noAnchor ||
+        (startsAtChange && fromStart < contextLines) ||
+        (endsAtChange && fromEnd < contextLines);
       flat[k].hidden = !visible;
     }
     i = j;

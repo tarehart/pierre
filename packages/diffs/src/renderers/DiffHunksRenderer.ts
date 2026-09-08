@@ -2141,6 +2141,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       this.lastWindowModel = undefined;
       this.windowExpandIndexToFoldId = new Map();
       this.windowLineIndexLookup = undefined;
+      let capturedWindowModel: WindowedDiffResult | undefined;
       iterateWindowedDiff({
         diff: fileDiff,
         window: windowState.window,
@@ -2154,10 +2155,48 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         callback: diffRowCallback,
         onModel: (model, expandIndexToFoldId, lineIndexLookup) => {
           this.lastWindowModel = model;
+          capturedWindowModel = model;
           this.windowExpandIndexToFoldId = expandIndexToFoldId;
           this.windowLineIndexLookup = lineIndexLookup;
         },
       });
+      // A resolved window with no visible row at all (e.g. a stale window
+      // past the end of a file that shrank) never invokes diffRowCallback --
+      // there is no kept row to attach the fold to -- so pushWindowSeparator
+      // never runs and the reader gets a blank, unrecoverable diff with no
+      // way back. The file (non-diff) windowing engine avoids this because it
+      // walks its row model directly rather than through a per-kept-row
+      // callback, so an all-hidden window still emits its separator. Detect
+      // the same case here from the raw model (every row folded, none kept)
+      // and push the resulting fold(s) directly, reusing the expand index
+      // iterateWindowedDiff already assigned each fold (in
+      // windowExpandIndexToFoldId) rather than renumbering them.
+      if (context.rowCount === 0 && capturedWindowModel != null) {
+        const windowModel = capturedWindowModel;
+        const expandIndexByFoldId = new Map<string, number>();
+        for (const [index, foldId] of this.windowExpandIndexToFoldId) {
+          expandIndexByFoldId.set(foldId, index);
+        }
+        for (const row of windowModel.rows) {
+          if (row.kind === 'separator') {
+            const expandIndex = expandIndexByFoldId.get(row.id);
+            if (expandIndex == null) {
+              continue;
+            }
+            pushWindowSeparator({
+              expandIndex,
+              foldId: row.id,
+              boundary: row.boundary,
+              collapsedLines: row.collapsedLines,
+              containsChanges: row.containsChanges,
+              newLineRange: row.newLineRange,
+              canExpandUp: row.canExpandUp,
+              canExpandDown: row.canExpandDown,
+              rangeSize: row.collapsedLines,
+            });
+          }
+        }
+      }
     } else {
       iterateOverDiff({
         diff: fileDiff,

@@ -2030,23 +2030,62 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         }
       }
 
-      const isFinalSplitHunkRow =
-        diffStyle === 'split' &&
-        hunk != null &&
-        splitLineIndex === hunk.splitLineStart + hunk.splitLineCount - 1;
-      const isFinalHunkRow =
-        hunkIndex === fileDiff.hunks.length - 1 &&
-        hunk != null &&
-        (diffStyle === 'split'
-          ? splitLineIndex === hunk.splitLineStart + hunk.splitLineCount - 1
-          : unifiedLineIndex ===
-            hunk.unifiedLineStart + hunk.unifiedLineCount - 1);
-      const splitNoEOFCRDeletion = isFinalSplitHunkRow
-        ? hunk.noEOFCRDeletions
-        : false;
-      const splitNoEOFCRAddition = isFinalSplitHunkRow
-        ? hunk.noEOFCRAdditions
-        : false;
+      // Windowed rows carry densified splitLineIndex/unifiedLineIndex (see
+      // iterateWindowedDiff's redensify), which no longer agree with the
+      // diff's original hunk geometry (hunk.splitLineStart, etc.). Compare
+      // deletionLine.lineIndex/additionLine.lineIndex (the content-array
+      // index, untouched by densification) against the hunk's own
+      // content-index bounds instead when windowed, checking each side
+      // independently: split columns can end at different rows (a shorter
+      // deletion side reaching EOF while additions continue, or vice versa),
+      // and the two sides land on different callback invocations once
+      // windowed, so an OR-of-both-sides check (matching the non-windowed
+      // shared-split-slot model below) would flag an unrelated later row on
+      // the OTHER side as final too, duplicating the marker. The non-windowed
+      // branch is untouched from before windowing existed.
+      let isFinalSplitHunkRow: boolean;
+      let isFinalHunkRow: boolean;
+      let splitNoEOFCRDeletion: boolean;
+      let splitNoEOFCRAddition: boolean;
+      if (windowState != null && hunk != null) {
+        const isFinalDeletionRow =
+          deletionLine != null &&
+          deletionLine.lineIndex ===
+            hunk.deletionLineIndex + hunk.deletionCount - 1;
+        const isFinalAdditionRow =
+          additionLine != null &&
+          additionLine.lineIndex ===
+            hunk.additionLineIndex + hunk.additionCount - 1;
+        isFinalSplitHunkRow =
+          diffStyle === 'split' && (isFinalDeletionRow || isFinalAdditionRow);
+        isFinalHunkRow =
+          hunkIndex === fileDiff.hunks.length - 1 &&
+          (isFinalDeletionRow || isFinalAdditionRow);
+        splitNoEOFCRDeletion = isFinalDeletionRow
+          ? hunk.noEOFCRDeletions
+          : false;
+        splitNoEOFCRAddition = isFinalAdditionRow
+          ? hunk.noEOFCRAdditions
+          : false;
+      } else {
+        isFinalSplitHunkRow =
+          diffStyle === 'split' &&
+          hunk != null &&
+          splitLineIndex === hunk.splitLineStart + hunk.splitLineCount - 1;
+        isFinalHunkRow =
+          hunkIndex === fileDiff.hunks.length - 1 &&
+          hunk != null &&
+          (diffStyle === 'split'
+            ? splitLineIndex === hunk.splitLineStart + hunk.splitLineCount - 1
+            : unifiedLineIndex ===
+              hunk.unifiedLineStart + hunk.unifiedLineCount - 1);
+        splitNoEOFCRDeletion = isFinalSplitHunkRow
+          ? hunk!.noEOFCRDeletions
+          : false;
+        splitNoEOFCRAddition = isFinalSplitHunkRow
+          ? hunk!.noEOFCRAdditions
+          : false;
+      }
       const noEOFCRDeletion =
         (deletionLine?.noEOFCR ?? false) || splitNoEOFCRDeletion;
       const noEOFCRAddition =

@@ -94,6 +94,7 @@ import { iterateOverDiff } from '../utils/iterateOverDiff';
 import {
   iterateWindowedDiff,
   type WindowedDiffLineCallbackProps,
+  type WindowedLineIndexLookup,
   type WindowSeparatorSpec,
 } from '../utils/iterateWindowedDiff';
 import { renderDiffWithHighlighter } from '../utils/renderDiffWithHighlighter';
@@ -294,6 +295,9 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
   // Maps each windowed separator's `data-expand-index` to its stable fold id,
   // so an expansion click (which arrives as an index) routes to the right fold.
   private windowExpandIndexToFoldId = new Map<number, string>();
+  // Resolves a rendered (lineNumber, side) to the densified line-index pair
+  // actually written into this render's DOM. Undefined outside windowed mode.
+  private windowLineIndexLookup: WindowedLineIndexLookup | undefined;
 
   private deletionAnnotations: AnnotationLineMap<LAnnotation> = {};
   private additionAnnotations: AnnotationLineMap<LAnnotation> = {};
@@ -591,6 +595,17 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
   /** The windowed model from the most recent render, for host separator wiring. */
   public getWindowModel(): WindowedDiffResult | undefined {
     return this.lastWindowModel;
+  }
+
+  /**
+   * Resolves a rendered (new-file lineNumber, side) to the densified
+   * `[unifiedLineIndex, splitLineIndex]` pair actually written into the most
+   * recent windowed render's DOM. Undefined outside windowed mode (mirrors
+   * `getWindowModel`: valid only after a windowed render; check
+   * `getWindowState()` first).
+   */
+  public getWindowLineIndexLookup(): WindowedLineIndexLookup | undefined {
+    return this.windowLineIndexLookup;
   }
 
   /**
@@ -1567,7 +1582,18 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       collapsedContextThreshold,
       hunkSeparators,
     } = this.getOptionsWithDefaults();
-    const isRenderCacheDirty = this.renderCache?.isDirty ?? false;
+    // Content rows read pre-highlighted per-line HAST nodes whose
+    // `data-line-index` was baked in against the WHOLE FILE's original
+    // coordinates. An edit session invalidates that baked-in value (the
+    // `renderCache.isDirty` case); windowing does too, in exactly the same
+    // way -- densified rendered rows no longer agree with a line's original
+    // index -- so it must force the same content-column override, or the
+    // content column silently keeps stale, non-windowed indexes while the
+    // gutter column (built fresh from this pass) renders the correct dense
+    // ones. See FileDiff.getLineIndex's windowed lookup, which depends on
+    // both columns agreeing.
+    const isRenderCacheDirty =
+      (this.renderCache?.isDirty ?? false) || this.windowState != null;
 
     const unified = diffStyle === 'unified';
     // Windowing applies to both unified and split; the windowed row stream is
@@ -2107,6 +2133,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       // renders — expandable because the diff is non-partial.
       this.lastWindowModel = undefined;
       this.windowExpandIndexToFoldId = new Map();
+      this.windowLineIndexLookup = undefined;
       iterateWindowedDiff({
         diff: fileDiff,
         window: windowState.window,
@@ -2118,9 +2145,10 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
           this.options.windowContextLines ?? DEFAULT_WINDOW_CONTEXT_LINES,
         reveal: windowState.reveal,
         callback: diffRowCallback,
-        onModel: (model, expandIndexToFoldId) => {
+        onModel: (model, expandIndexToFoldId, lineIndexLookup) => {
           this.lastWindowModel = model;
           this.windowExpandIndexToFoldId = expandIndexToFoldId;
+          this.windowLineIndexLookup = lineIndexLookup;
         },
       });
     } else {

@@ -65,13 +65,31 @@ export interface IterateWindowedDiffProps {
   /**
    * Receives the computed windowed model plus the map from rendered
    * `expandIndex` to the fold's stable id, so an expansion click (which arrives
-   * as an `expandIndex`) can be routed to `expandWindowSeparator(foldId)`.
+   * as an `expandIndex`) can be routed to `expandWindowSeparator(foldId)`. Also
+   * receives the densified line-index lookup (see `WindowedLineIndexLookup`)
+   * so callers that resolve a source line to a rendered row -- selection,
+   * pointer targeting -- can use the same dense coordinates the renderer wrote
+   * into the DOM instead of recomputing from the diff's original hunk geometry.
    */
   onModel?: (
     model: WindowedDiffResult,
-    expandIndexToFoldId: Map<number, string>
+    expandIndexToFoldId: Map<number, string>,
+    lineIndexLookup: WindowedLineIndexLookup
   ) => void;
 }
+
+/**
+ * Maps a rendered (new-file, one-based) line number and side to the densified
+ * `[unifiedLineIndex, splitLineIndex]` pair the renderer actually wrote onto
+ * that row's DOM elements. Built from the same redensified rows the callback
+ * receives, so a lookup here always agrees with `data-line-index` in the DOM
+ * -- unlike walking `fileDiff.hunks`, which only knows the diff's original,
+ * non-windowed coordinates.
+ */
+export type WindowedLineIndexLookup = (
+  lineNumber: number,
+  side: 'deletions' | 'additions'
+) => [number, number] | undefined;
 
 /**
  * Drive the diff render callback from a windowed model instead of a raw
@@ -129,6 +147,10 @@ export function iterateWindowedDiff({
   // data-line-index attributes never collide.
   let denseSplit = 0;
   let denseUnified = 0;
+  // Densified `[unifiedLineIndex, splitLineIndex]` per rendered (lineNumber,
+  // side), keyed by `lineIndexKey`. Populated as each row is redensified so a
+  // lookup always matches the row's actual DOM attributes.
+  const lineIndexByKey = new Map<string, [number, number]>();
 
   const makeSpec = (
     row: Extract<WindowedDiffResult['rows'][number], { kind: 'separator' }>
@@ -163,8 +185,11 @@ export function iterateWindowedDiff({
       row.row.type === 'change' &&
       row.row.deletionLine != null &&
       row.row.additionLine != null;
+    const densified = redensify(row.row, denseSplit, denseUnified);
+    recordLineIndex(lineIndexByKey, densified.deletionLine, 'deletions');
+    recordLineIndex(lineIndexByKey, densified.additionLine, 'additions');
     pending.push({
-      props: redensify(row.row, denseSplit, denseUnified),
+      props: densified,
       before: pendingBefore,
     });
     denseSplit += 1;
@@ -174,7 +199,10 @@ export function iterateWindowedDiff({
     trailing = [];
   }
 
-  onModel?.(model, expandIndexToFoldId);
+  const lineIndexLookup: WindowedLineIndexLookup = (lineNumber, side) =>
+    lineIndexByKey.get(lineIndexKey(lineNumber, side));
+
+  onModel?.(model, expandIndexToFoldId, lineIndexLookup);
 
   for (let i = 0; i < pending.length; i++) {
     const entry = pending[i];
@@ -201,6 +229,31 @@ export function iterateWindowedDiff({
   // selection) still needs its folds rendered. Emit nothing here; callers that
   // support a row-less render handle it, and the SSR/whole-file path shows an
   // empty diff. This matches the pre-existing empty-window behavior.
+}
+
+// Stable string key for the lineNumber/side lookup map. A plain tuple can't be
+// a Map key by value, so join into a string.
+function lineIndexKey(
+  lineNumber: number,
+  side: 'deletions' | 'additions'
+): string {
+  return `${lineNumber}:${side}`;
+}
+
+// Record a redensified line's dense indexes under its (lineNumber, side) key,
+// if that side is present on this row.
+function recordLineIndex(
+  map: Map<string, [number, number]>,
+  line: DiffLineMetadata | undefined,
+  side: 'deletions' | 'additions'
+): void {
+  if (line == null) {
+    return;
+  }
+  map.set(lineIndexKey(line.lineNumber, side), [
+    line.unifiedLineIndex,
+    line.splitLineIndex,
+  ]);
 }
 
 // Rewrite a captured row's rendered-row positions to dense values while

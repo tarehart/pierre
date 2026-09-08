@@ -552,6 +552,24 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
     lineNumber: number,
     side: SelectionSide = 'additions'
   ) => {
+    // In windowed mode, rendered rows carry densified indexes that leave no
+    // gaps for folded lines -- they no longer agree with the diff's original
+    // hunk geometry. Resolve against the renderer's own densified lookup
+    // (built from the same pass that wrote each row's data-line-index) so DOM
+    // selectors built from this index keep matching what actually rendered.
+    // Only present after a windowed render; a miss (line inside a fold, or a
+    // getLineIndex call issued before the first windowed render lands) falls
+    // through to the hunk walk below, matching the prior, non-windowed
+    // behavior for that case.
+    if (this.hunksRenderer.getWindowState() != null) {
+      const windowIndexes = this.hunksRenderer.getWindowLineIndexLookup()?.(
+        lineNumber,
+        side
+      );
+      if (windowIndexes != null) {
+        return windowIndexes;
+      }
+    }
     return this.getLineIndexForDiff(
       this.getDiffForLineIndex(),
       lineNumber,

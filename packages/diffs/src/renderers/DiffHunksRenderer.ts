@@ -154,6 +154,16 @@ interface PushSeparatorProps {
    * affordance; the slot's `hunkData.hunkIndex` is the fold's expand index.
    */
   forceCustomSlot?: boolean;
+  /**
+   * True for a windowed fold (pushed via `pushWindowSeparator`). The
+   * `metadata`/`simple` branches below early-return on the WHOLE-FILE
+   * `hunkSpecs`/`hunkIndex` semantics (no metadata to show; no separator
+   * before the very first hunk) -- neither applies to a windowed fold, which
+   * carries no `hunkSpecs` and uses `expandIndex` (starting at 0) in place of
+   * `hunkIndex`, and must always render something, since it is the reader's
+   * only way back to the folded lines it hides.
+   */
+  isWindowedFold?: boolean;
 }
 
 interface ProcessContext {
@@ -1738,6 +1748,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         isLastHunk: spec.boundary === 'below',
         isExpandable: true,
         forceCustomSlot: windowHasSeparatorRenderer,
+        isWindowedFold: true,
       });
     }
 
@@ -2099,11 +2110,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         context.incrementRowCount(1);
       }
 
-      if (
-        windowSeparatorsAfter != null &&
-        hunkSeparators !== 'simple' &&
-        hunkSeparators !== 'metadata'
-      ) {
+      if (windowSeparatorsAfter != null) {
         for (const spec of windowSeparatorsAfter) {
           pushWindowSeparator(spec);
         }
@@ -2623,6 +2630,7 @@ function pushSeparator(
     isLastHunk,
     isExpandable,
     forceCustomSlot,
+    isWindowedFold,
   }: PushSeparatorProps,
   context: ProcessContext
 ) {
@@ -2641,7 +2649,16 @@ function pushSeparator(
   const separatorType =
     forceCustomSlot === true ? 'custom' : context.hunkSeparators;
 
-  if (separatorType === 'metadata') {
+  // A windowed fold always needs a visible, expandable affordance -- it is
+  // the reader's only way back to the lines it hides -- so it cannot take the
+  // `metadata`/`simple` early exits below, which are written for the
+  // whole-file walk's own semantics: `metadata` skips a hunk with no
+  // `hunkSpecs` (folds never carry one) and `simple` skips the hunk at index
+  // 0 (folds reuse `expandIndex`, which starts at 0 for the first fold
+  // regardless of boundary). Fall through to the line-info-shaped render
+  // below instead, same as the `custom` and default branches already do for
+  // a windowed fold.
+  if (separatorType === 'metadata' && isWindowedFold !== true) {
     if (hunkSpecs != null) {
       context.pushToGutter(
         type,
@@ -2666,7 +2683,7 @@ function pushSeparator(
     }
     return;
   }
-  if (separatorType === 'simple') {
+  if (separatorType === 'simple' && isWindowedFold !== true) {
     if (hunkIndex > 0) {
       context.pushToGutter(
         type,
@@ -2731,10 +2748,23 @@ function pushSeparator(
       );
     }
   } else {
+    // A windowed fold in `simple` mode has no visual content at all (a plain
+    // divider) and in `metadata` mode has no `hunkSpecs` to show -- neither
+    // gives the reader anything to click, so a fold would render as a
+    // permanent dead end. Render it the same way the non-diff windowed-file
+    // engine always does: as a line-info-shaped separator with its "N
+    // unmodified lines" label and expand button. Only the fold itself is
+    // affected; a whole-file separator in `simple`/`metadata` mode (the
+    // non-windowed early-return branches above) is unchanged.
+    const effectiveSeparatorType =
+      isWindowedFold === true &&
+      (separatorType === 'simple' || separatorType === 'metadata')
+        ? 'line-info'
+        : separatorType;
     context.pushToGutter(
       type,
       createSeparator({
-        type: separatorType,
+        type: effectiveSeparatorType,
         content,
         expandIndex,
         chunked,
@@ -2745,7 +2775,7 @@ function pushSeparator(
     );
     linesAST.push(
       createSeparator({
-        type: separatorType,
+        type: effectiveSeparatorType,
         content,
         expandIndex,
         chunked,

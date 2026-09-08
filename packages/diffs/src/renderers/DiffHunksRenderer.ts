@@ -2689,29 +2689,47 @@ function pushSeparator(
       ? getModifiedLinesString(collapsedLines)
       : 'More unchanged context may be available';
   if (separatorType === 'custom') {
-    // A host-rendered windowed separator (`renderWindowSeparator`) must live in
-    // the content column, not the gutter: its label/affordance would overflow
-    // the narrow gutter, and a single slotted host element is assigned to the
-    // first matching slot — which would be the gutter's. Give the gutter an
-    // empty aligned cell and put the slot (with content and the expand
-    // affordance) in the content column, mirroring how FileRenderer lays out a
-    // windowed file separator. The built-in separators below still span both
-    // columns as before.
-    context.pushToGutter(
-      type,
-      createSeparator({ type: 'custom', isFirstHunk, isLastHunk })
-    );
-    linesAST.push(
-      createSeparator({
-        type: separatorType,
-        content,
-        expandIndex,
-        chunked,
-        slotName,
-        isFirstHunk,
-        isLastHunk,
-      })
-    );
+    if (forceCustomSlot === true) {
+      // A host-rendered windowed separator (`renderWindowSeparator`) must live
+      // in the content column, not the gutter: its label/affordance would
+      // overflow the narrow gutter, and a single slotted host element is
+      // assigned to the first matching slot — which would be the gutter's.
+      // Give the gutter an empty aligned cell and put the slot (with content
+      // and the expand affordance) in the content column, mirroring how
+      // FileRenderer lays out a windowed file separator. The built-in
+      // separators below still span both columns as before.
+      context.pushToGutter(
+        type,
+        createSeparator({ type: 'custom', isFirstHunk, isLastHunk })
+      );
+      linesAST.push(
+        createSeparator({
+          type: separatorType,
+          content,
+          expandIndex,
+          chunked,
+          slotName,
+          isFirstHunk,
+          isLastHunk,
+        })
+      );
+    } else {
+      // The shipped, non-windowed `hunkSeparators: fn` API (deprecated, but
+      // still supported): the host's element is the entire separator, so it
+      // renders identically in both columns with no expand-index -- an
+      // unwrapped slot, not an expand-button region -- matching this API's
+      // pre-windowing behavior. Passing expandIndex here would wrap the
+      // host's slotted element in Pierre's own clickable region (see
+      // createSeparator), which windowing added only for the
+      // renderWindowSeparator hook above and was never part of this contract.
+      context.pushToGutter(
+        type,
+        createSeparator({ type: 'custom', slotName, isFirstHunk, isLastHunk })
+      );
+      linesAST.push(
+        createSeparator({ type: 'custom', slotName, isFirstHunk, isLastHunk })
+      );
+    }
   } else {
     context.pushToGutter(
       type,

@@ -47,7 +47,110 @@ function expandSeparators(container: HTMLElement): Element[] {
   );
 }
 
+// A built-in separator is pushed into both the gutter and content columns
+// (see FileRenderer/DiffHunksRenderer.pushSeparator), so [data-expand-index]
+// matches twice per fold. Dedupe to one representative element per fold,
+// keeping DOM order, so assertions read one entry per fold rather than per
+// rendered copy.
+function distinctFoldSeparators(container: HTMLElement): Element[] {
+  const seen = new Set<string>();
+  const out: Element[] = [];
+  for (const el of expandSeparators(container)) {
+    const index = el.getAttribute('data-expand-index');
+    if (index == null || seen.has(index)) {
+      continue;
+    }
+    seen.add(index);
+    out.push(el);
+  }
+  return out;
+}
+
 describe('FileDiff windowed rendering (React SPA path)', () => {
+  test('windowed fold direction is derived from boundary, not always both', async () => {
+    // A whole-file window still folds long unchanged runs into interior
+    // separators once windowContextLines is small enough. This exercises the
+    // interior boundary value going through the rendered DOM attributes
+    // InteractionManager actually reads (data-expand-up/-down/-both,
+    // data-separator-first/-last) rather than calling expandHunk directly,
+    // since that bypasses the DOM-derived direction entirely and would not
+    // have caught this defect.
+    const { cleanup } = installDom();
+    let instance: FileDiff<string> | undefined;
+    try {
+      const fileContainer = document.createElement('div');
+      instance = new FileDiff<string>({
+        disableFileHeader: true,
+        diffStyle: 'unified',
+        hunkSeparators: 'line-info',
+        window: { start: 1, end: 40 },
+        windowContextLines: 3,
+      });
+      instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
+      await waitForRenderedCode(fileContainer);
+
+      // Whole-file window (1-40) with changes at lines 5 and 30: no
+      // above/below boundary folds (both file edges are already shown by a
+      // window spanning the whole file), only interior folds between/around
+      // the two changes.
+      const folds = distinctFoldSeparators(fileContainer);
+      expect(folds.length).toBeGreaterThan(0);
+      for (const fold of folds) {
+        expect(fold.hasAttribute('data-separator-first')).toBe(false);
+        expect(fold.hasAttribute('data-separator-last')).toBe(false);
+        expect(fold.querySelector('[data-expand-both]')).not.toBeNull();
+        expect(fold.querySelector('[data-expand-up]')).toBeNull();
+        expect(fold.querySelector('[data-expand-down]')).toBeNull();
+      }
+    } finally {
+      instance?.cleanUp();
+      cleanup();
+    }
+  });
+
+  test('above and below boundary folds expand toward the window, not both directions', async () => {
+    const { cleanup } = installDom();
+    let instance: FileDiff<string> | undefined;
+    try {
+      const fileContainer = document.createElement('div');
+      instance = new FileDiff<string>({
+        disableFileHeader: true,
+        diffStyle: 'unified',
+        hunkSeparators: 'line-info',
+        window: { start: 25, end: 35 },
+        windowContextLines: 50,
+      });
+      instance.render({ fileContainer, fileDiff: makeWindowedDiff() });
+      await waitForRenderedCode(fileContainer);
+
+      // This window (25-35) has exactly an above fold (hiding lines 1-24,
+      // including the line-5 change) and a below fold (hiding lines 36-40);
+      // no interior fold since windowContextLines is generous.
+      const folds = distinctFoldSeparators(fileContainer);
+      expect(folds).toHaveLength(2);
+      const [above, below] = folds;
+
+      // The above fold only expands down (toward the window): its arrow must
+      // be data-expand-down, never data-expand-both or data-expand-up, and it
+      // must carry data-separator-first (so style.css zeros its top margin).
+      expect(above.hasAttribute('data-separator-first')).toBe(true);
+      expect(above.hasAttribute('data-separator-last')).toBe(false);
+      expect(above.querySelector('[data-expand-down]')).not.toBeNull();
+      expect(above.querySelector('[data-expand-both]')).toBeNull();
+      expect(above.querySelector('[data-expand-up]')).toBeNull();
+
+      // The below fold only expands up (toward the window): the mirror image.
+      expect(below.hasAttribute('data-separator-first')).toBe(false);
+      expect(below.hasAttribute('data-separator-last')).toBe(true);
+      expect(below.querySelector('[data-expand-up]')).not.toBeNull();
+      expect(below.querySelector('[data-expand-both]')).toBeNull();
+      expect(below.querySelector('[data-expand-down]')).toBeNull();
+    } finally {
+      instance?.cleanUp();
+      cleanup();
+    }
+  });
+
   test('renders only the window with expandable folds, and hides out-of-window changes', async () => {
     const { cleanup } = installDom();
     let instance: FileDiff<string> | undefined;

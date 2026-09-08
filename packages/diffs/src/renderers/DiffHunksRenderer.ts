@@ -1688,8 +1688,16 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     // Windowed folds carry their own unique expand index (the whole-file
     // path's index arithmetic does not apply), so they are pushed from an
     // explicit spec rather than the collapsedBefore/After counters. The
-    // expand-arrow direction comes from the fold's own canExpandUp/Down
-    // (`isFirstHunk` suppresses the up arrow, `isLastHunk` the down arrow).
+    // expand-arrow direction (and which margin style.css zeros via
+    // data-separator-first/-last) comes from the fold's position relative to
+    // the window, not from canExpandUp/canExpandDown -- those report whether
+    // the fold can still peel from that edge (always true; see
+    // computeWindowedDiffRows.ts's emitFold), which is a different question
+    // from which direction the built-in arrow displays. An above-window fold
+    // only ever needs to expand down (toward the window); a below-window
+    // fold only up; only an interior fold is genuinely two-directional. This
+    // mirrors FileRenderer.processFileResult's boundary-based isFirst/isLast
+    // for the windowed-file separator path.
     // When the host supplies a `renderWindowSeparator` hook, fold separators
     // render as empty custom slots the host fills instead of built-in line-info.
     const windowHasSeparatorRenderer =
@@ -1700,8 +1708,8 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         collapsedLines: spec.collapsedLines,
         rangeSize: spec.rangeSize,
         hunkSpecs: undefined,
-        isFirstHunk: !spec.canExpandUp,
-        isLastHunk: !spec.canExpandDown,
+        isFirstHunk: spec.boundary === 'above',
+        isLastHunk: spec.boundary === 'below',
         isExpandable: true,
         forceCustomSlot: windowHasSeparatorRenderer,
       });

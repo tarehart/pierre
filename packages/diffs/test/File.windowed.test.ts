@@ -69,6 +69,55 @@ describe('File windowed rendering', () => {
     }
   });
 
+  test('the default windowed separator is pushed into both the gutter and content columns', async () => {
+    // DiffHunksRenderer.pushSeparator pushes a built-in separator into BOTH
+    // the gutter and content columns (style.css's default rule then hides the
+    // content column's copy and shows the gutter's). The windowed File path
+    // must mirror that invariant instead of pushing a bare, separator-less
+    // gap into the gutter: a gutter gap alone carries no [data-separator] or
+    // [data-separator-wrapper] at all, so the "N hidden lines" label and its
+    // data-expand-button would be missing from layout and hit-testing (no
+    // stylesheet is loaded in this jsdom harness, so both copies are present
+    // in markup regardless of which one CSS would visually show).
+    const { cleanup } = installDom();
+    let instance: File | undefined;
+    try {
+      const fc = document.createElement('div');
+      instance = new File({
+        disableFileHeader: true,
+        window: { start: 20, end: 30 },
+      });
+      instance.render({
+        fileContainer: fc,
+        file: { name: 'f.txt', contents: FIFTY_LINES },
+      });
+      await waitForRenderedCode(fc);
+
+      const gutter = fc.shadowRoot?.querySelector('[data-gutter]');
+      const content = fc.shadowRoot?.querySelector('[data-content]');
+      expect(gutter).not.toBeNull();
+      expect(content).not.toBeNull();
+
+      const gutterSeparators = gutter!.querySelectorAll(
+        '[data-separator="line-info"]'
+      );
+      const contentSeparators = content!.querySelectorAll(
+        '[data-separator="line-info"]'
+      );
+      // Both columns carry the real separator (with its expand affordance),
+      // not just the content column with a bare gap in the gutter.
+      expect(gutterSeparators.length).toBeGreaterThan(0);
+      expect(contentSeparators.length).toBe(gutterSeparators.length);
+      for (const sep of Array.from(gutterSeparators)) {
+        expect(sep.querySelector('[data-separator-wrapper]')).not.toBeNull();
+        expect(sep.querySelector('[data-expand-button]')).not.toBeNull();
+      }
+    } finally {
+      instance?.cleanUp();
+      cleanup();
+    }
+  });
+
   test('clicking a separator (via expandHunk) reveals more lines in place', async () => {
     const { cleanup } = installDom();
     let instance: File | undefined;

@@ -1005,18 +1005,56 @@ export class FileRenderer<LAnnotation = undefined> {
           const content = ws.hasSeparatorRenderer
             ? undefined
             : `${wrow.collapsedLines} hidden line${wrow.collapsedLines === 1 ? '' : 's'}`;
-          // Gutter: one-cell gap aligning with the separator row.
-          gutter.children.push(createGutterGap('context', 'metadata', 1));
-          contentArray.push(
-            createSeparator({
-              type: separatorType,
-              content,
-              expandIndex,
-              isFirstHunk: isFirst,
-              isLastHunk: isLast,
-              slotName,
-            })
-          );
+          if (ws.hasSeparatorRenderer) {
+            // A host-rendered windowed separator must live in the content
+            // column only: a single slotted host element is assigned to the
+            // first matching slot, so duplicating the slot into the gutter
+            // would either break that assignment or silently orphan the
+            // gutter's copy. Give the gutter an aligned empty cell instead,
+            // mirroring DiffHunksRenderer.pushSeparator's custom-slot case.
+            gutter.children.push(createGutterGap('context', 'metadata', 1));
+            contentArray.push(
+              createSeparator({
+                type: separatorType,
+                content,
+                expandIndex,
+                isFirstHunk: isFirst,
+                isLastHunk: isLast,
+                slotName,
+              })
+            );
+          } else {
+            // Built-in separator: push the same separator into both the
+            // gutter and content columns, mirroring
+            // DiffHunksRenderer.pushSeparator's built-in-separator pattern.
+            // style.css's default rule hides the content column's copy
+            // ([data-content] [data-separator-wrapper] { display: none })
+            // and shows the gutter's -- a bare gutter gap (as this used to
+            // push) carries no [data-separator-wrapper] at all, so the "N
+            // hidden lines" label and its data-expand-button were removed
+            // from layout and hit-testing entirely, leaving a blank,
+            // unclickable band.
+            gutter.children.push(
+              createSeparator({
+                type: separatorType,
+                content,
+                expandIndex,
+                isFirstHunk: isFirst,
+                isLastHunk: isLast,
+                slotName,
+              })
+            );
+            contentArray.push(
+              createSeparator({
+                type: separatorType,
+                content,
+                expandIndex,
+                isFirstHunk: isFirst,
+                isLastHunk: isLast,
+                slotName,
+              })
+            );
+          }
           rowCount++;
         }
       }

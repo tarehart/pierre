@@ -60,12 +60,12 @@ export async function renderWindowedFileHTML<
   const windowState: FileWindowRenderState = {
     window,
     reveal,
-    // NOTE: hardcoded false here (not derived from options.renderWindowSeparator)
-    // is a separate, known gap tracked out of scope for this fix (see
-    // DECISIONS.md) -- SSR custom windowed-separator wiring is a distinct
-    // defect from the two (empty cold-process output, missing hydration
-    // wrapper) this function addresses.
-    hasSeparatorRenderer: false,
+    // A host-owned separator has no server-side render step for its own
+    // element (that only exists client-side), but the renderer still needs to
+    // know to leave an empty custom slot rather than the built-in line-info
+    // separator, or the client's post-hydration fill would land inside markup
+    // with a different shape and height than what the host actually renders.
+    hasSeparatorRenderer: options?.renderWindowSeparator != null,
   };
   renderer.setWindowState(windowState);
   if (annotations != null && annotations.length > 0) {

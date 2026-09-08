@@ -62,6 +62,12 @@ export async function renderWindowedDiffHTML<
   renderer.setWindowState({
     window,
     reveal: reveal ?? createEmptyReveal(),
+    // A host-owned separator has no server-side render step for its own
+    // element (that only exists client-side), but the renderer still needs to
+    // know to leave an empty custom slot rather than the built-in line-info
+    // separator, or the client's post-hydration fill would land inside markup
+    // with a different shape and height than what the host actually renders.
+    hasSeparatorRenderer: options?.renderWindowSeparator != null,
   });
   if (annotations != null && annotations.length > 0) {
     renderer.setLineAnnotations(annotations);

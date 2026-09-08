@@ -71,5 +71,10 @@ export async function renderWindowedFileHTML<
   if (annotations != null && annotations.length > 0) {
     renderer.setLineAnnotations(annotations);
   }
-  return preloadFileHTML({ file, options, annotations, renderer });
+  // annotations already applied above via setLineAnnotations on the renderer
+  // this function constructs; preloadFileHTML only applies its own
+  // `annotations` param when it builds the renderer itself (no `renderer`
+  // passed in), so it is not passed again here to avoid implying it does
+  // something when a renderer is provided.
+  return preloadFileHTML({ file, options, renderer });
 }

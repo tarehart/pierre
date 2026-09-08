@@ -36,6 +36,14 @@ export interface PreloadedFileResult<LAnnotation, Caret> {
  * `renderWindowedFileHTML` (hands in a renderer already in windowed mode), so
  * both entry points produce hydratable output through one code path instead
  * of each maintaining their own copy of the wrapper.
+ *
+ * `annotations` is only applied here when no `renderer` is provided: a
+ * caller that hands in its own renderer (currently only
+ * `renderWindowedFileHTML`) is expected to have already called
+ * `setLineAnnotations` on it, since annotations must be set before the
+ * renderer's window state for the windowed path to interleave them
+ * correctly. Passing `annotations` alongside a `renderer` here would be
+ * silently inert, so callers should omit it in that case.
  */
 export async function preloadFileHTML<LAnnotation, Caret>({
   file,

@@ -58,16 +58,20 @@ export function clampWindow(
  * folds only its middle into an interior separator — mirroring a conventional
  * diff's `-U<n>` context. Change rows are always visible.
  *
- * Only a change anchors context; the window edge does not. A run touching the
- * window edge keeps `contextLines` on its change-facing side only (if any) and
- * shows nothing extra on its window-edge side, because that side was already
- * fully inside the requested range — folding part of it would hide lines the
- * caller explicitly asked to see. A run bounded by changes on both sides shows
- * in full when its length is `<= 2 * contextLines` (the two margins meet); a
- * run bounded by the window edge on both sides (the window contains no
- * changes at all) never folds, since neither side has a change to hug. Pass a
- * non-finite value (e.g. `Infinity`) to disable interior folding entirely and
- * keep every in-window line — the plain-file engine relies on this.
+ * Only a change anchors context; the window edge does not. A run touching
+ * the window edge keeps `contextLines` on its change-facing side only (if
+ * any); its window-edge side gets no extra margin and folds exactly like a
+ * conventional `-U<n>` diff's interior context would once past that
+ * distance from the nearest change — the window edge is not itself a change,
+ * so it does not earn a second margin of its own. The one case that never
+ * folds is a run bounded by the window edge on *both* sides (the window
+ * contains no change at all): there, neither side has a change to anchor a
+ * margin against, so the whole range shows in full rather than picking an
+ * arbitrary interior chunk to hide. A run bounded by changes on both sides
+ * shows in full when its length is `<= 2 * contextLines` (the two margins
+ * meet). Pass a non-finite value (e.g. `Infinity`) to disable interior
+ * folding entirely and keep every in-window line — the plain-file engine
+ * relies on this.
  */
 export function markBaseHidden(
   flat: WindowableFlatRow[],

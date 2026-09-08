@@ -157,7 +157,7 @@ describe('computeWindowedDiffRows', () => {
     );
   });
 
-  test('a run touching the window edge keeps context only on its change-facing side', () => {
+  test('a window with no change at all never folds, even at a generous window edge', () => {
     // 200-line file, single change at new-line 5, window deep in the unchanged
     // tail (100-160). The run [1..160] inside the window before line 160 (the
     // window's own end) has no change on either side within [100,160], so BOTH
@@ -166,6 +166,9 @@ describe('computeWindowedDiffRows', () => {
     // change-facing side"), a window edge must not anchor context the way a
     // change does: the full [100,160] range was explicitly requested, so it
     // should render in full rather than folding an interior chunk out of it.
+    // (The mixed case -- a change on one side, the window edge on the other --
+    // is covered separately below; that one DOES fold past the change's
+    // context margin, matching conventional -U<n> behavior.)
     const oldLines200 = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`);
     const newLines200 = [...oldLines200];
     newLines200[4] = 'line 5 CHANGED';
@@ -186,6 +189,40 @@ describe('computeWindowedDiffRows', () => {
     expect(separators(result).some((s) => s.boundary === 'interior')).toBe(
       false
     );
+  });
+
+  test('a run bounded by a change on one side and the window edge on the other folds like conventional -U<n> past the change margin', () => {
+    // 200-line file, single change at new-line 100, window straddling it
+    // (90-110) with contextLines 3. The run [90,99] is bounded by the window
+    // edge on its left (90) and the change on its right (100); the run
+    // [101,110] is the mirror image. Per this function's contract, only the
+    // change-facing side gets a contextLines margin -- the window-edge side
+    // gets no extra margin of its own and folds exactly like a conventional
+    // -U3 diff would past 3 lines from the change. This is the general mixed
+    // case the "touching the window edge" test above does not cover (that one
+    // is the narrower all-window-edge, no-change-at-all case).
+    const oldLines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`);
+    const newLines = [...oldLines];
+    newLines[99] = 'line 100 CHANGED';
+    const diff = parseDiffFromFile(
+      { name: 'f.txt', contents: oldLines.join('\n') + '\n' },
+      { name: 'f.txt', contents: newLines.join('\n') + '\n' }
+    );
+    const result = computeWindowedDiffRows({
+      diff,
+      window: { start: 90, end: 110 },
+      contextLines: 3,
+    });
+    // Only 3 lines of context on each side of the change survive; the
+    // window-edge-facing remainder of each run folds into an interior
+    // separator, matching plain `git diff -U3` for the same file/change.
+    expect(visibleNewLines(result)).toEqual([97, 98, 99, 100, 101, 102, 103]);
+    const interior = separators(result).filter(
+      (s) => s.boundary === 'interior'
+    );
+    expect(interior).toHaveLength(2);
+    expect(interior.find((s) => s.newLineRange?.[0] === 90)).toBeDefined();
+    expect(interior.find((s) => s.newLineRange?.[1] === 110)).toBeDefined();
   });
 
   test('an unchanged gap no larger than 2*contextLines stays fully expanded', () => {

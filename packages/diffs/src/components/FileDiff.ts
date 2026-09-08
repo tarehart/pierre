@@ -1646,6 +1646,14 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
       this.loadFilesIfNecessary();
     }
     this.hunksRenderer.setOptions(this.getHunksRendererOptions(this.options));
+    // Re-derive windowed render state from options on every render, not only
+    // syncWindowState's other two call sites (the constructor and
+    // setOptions). mergeOptions (used by setThemeType) and a host assigning
+    // options directly -- the demo's own `{...instance.options, window}`
+    // pattern -- both leave the renderer on a stale window otherwise, since
+    // they update this.options without going through setOptions. File.render
+    // already calls syncWindowState here for the same reason.
+    this.syncWindowState();
     this.syncInteractionOptions();
 
     this.hunksRenderer.setLineAnnotations(this.getLatestAnnotations());

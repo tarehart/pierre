@@ -284,7 +284,9 @@ export interface FileDiffOptions<LAnnotation, Caret>
    * Render this diff as a windowed snippet: show only the given new-file line
    * range expanded and fold everything else behind expandable boundary/interior
    * separators. Requires a non-partial diff (both blobs). Works in both
-   * unified and split diff styles.
+   * unified and split diff styles. Lines inside the window still fold near its
+   * edges when no change sits close enough to that boundary; see
+   * `windowContextLines` for the context budget that governs that.
    */
   window?: DiffWindow;
   /**

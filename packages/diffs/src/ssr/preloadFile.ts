@@ -17,7 +17,11 @@ export type PreloadFileOptions<LAnnotation, Caret> = {
    * A pre-configured renderer to render with instead of constructing one from
    * `options`. Used by `renderWindowedFileHTML`, which must set the renderer's
    * window state before rendering; the wrap/serialize path is otherwise
-   * identical. Internal — not part of the public preloadFile surface.
+   * identical. Part of the public `preloadFile` surface (re-exported from
+   * `ssr/index.ts`) for any caller that similarly needs to pre-configure a
+   * renderer before this function wraps and serializes its output. When
+   * supplying one, call `setLineAnnotations` on it directly instead of
+   * passing `annotations` here -- see `preloadFileHTML`'s docs for why.
    */
   renderer?: FileRenderer<LAnnotation>;
 };

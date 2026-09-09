@@ -1797,7 +1797,7 @@ function renderWindowedDemo() {
   const directionNote = makeNote(
     'Click a fold above or below the window to see the reported direction.'
   );
-  buildWindowedFileDiff(wrapper, fileDiff, {
+  const directionHandle = buildWindowedFileDiff(wrapper, fileDiff, {
     heading: "Windowed FileDiff — onWindowExpand's direction argument",
     diffStyle: 'unified',
     window: diffWindow,
@@ -1816,9 +1816,9 @@ function renderWindowedDemo() {
     },
   });
   // The note element is created above so onExpandMode can close over it, but
-  // it needs to render after the heading+instance it describes -- insert it
-  // right after the instance's own container (the last child appended).
-  wrapper.insertBefore(directionNote, null);
+  // it needs to render right after the instance it describes, not at the
+  // page's end -- insert it as the container's next sibling in the wrapper.
+  directionHandle.container.insertAdjacentElement('afterend', directionNote);
 
   // ── 9. Gap 4a: boundary folds also get the built-in in-place reveal ─────
   // onWindowExpand returns falsy for every fold, including boundary folds
@@ -1867,7 +1867,11 @@ function renderWindowedDemo() {
 
   // ── 12. Gap 10: window + annotations ────────────────────────────────────
   // Annotations placed inside the 350-430 window on both sides, reusing the
-  // demo's existing LineCommentMetadata/renderDiffAnnotation pattern.
+  // demo's existing LineCommentMetadata/renderDiffAnnotation pattern. The
+  // deletions-side annotation uses an OLD-file line number (280, a real
+  // change-deletion line in this diff) rather than a new-file line number --
+  // DiffLineAnnotation.lineNumber for side: 'deletions' is old-file-relative,
+  // distinct from the new-file line numbers the window itself is expressed in.
   const windowedAnnotations: DiffLineAnnotation<LineCommentMetadata>[] = [
     {
       lineNumber: 360,
@@ -1878,7 +1882,7 @@ function renderWindowedDemo() {
       },
     },
     {
-      lineNumber: 400,
+      lineNumber: 280,
       side: 'deletions',
       metadata: {
         author: 'Windowed Demo',
@@ -1888,7 +1892,7 @@ function renderWindowedDemo() {
   ];
   buildWindowedFileDiff(wrapper, fileDiff, {
     heading: 'Windowed FileDiff — window + lineAnnotations',
-    note: 'Annotations at new-file lines 360 and 400 sit inside the 350-430 window.',
+    note: 'Additions-side annotation at new-file line 360; deletions-side at old-file line 280 -- both inside the 350-430 window.',
     diffStyle: 'split',
     window: diffWindow,
     windowContextLines: 8,
@@ -1956,13 +1960,28 @@ function renderWindowedDemo() {
   ]);
 
   // Gap 8: set an out-of-range window (past EOF on a 711-line file) to show
-  // the empty-window recovery affordance instead of a blank pane.
+  // the empty-window recovery affordance instead of a blank pane. Uses its
+  // own instance (onExpandMode: 'omit') rather than the shared control
+  // target: the control target's host-owned widen-boundary handler steps the
+  // window by a fixed 20 lines per click, which can never walk back the
+  // ~99,600-line gap this control creates -- the built-in in-place reveal
+  // (peeling a much larger default per click) is what actually demonstrates
+  // recovery here, matching how FileDiff.emptyWindowRecovery.test.ts exercises it.
+  const outOfRangeHandle = buildWindowedFileDiff(wrapper, fileDiff, {
+    heading: 'Windowed FileDiff — out-of-range window recovery target',
+    note: 'Starts on the same 350-430 window; the control below moves it out of range.',
+    diffStyle: 'split',
+    window: diffWindow,
+    windowContextLines: 8,
+    customSeparator: true,
+    onExpandMode: 'omit',
+  });
   buildControlGroup(wrapper, 'Control: out-of-range window', [
     makeButton('Set out-of-range window (100000-100050)', () => {
-      controlTarget.setWindow({ start: 100000, end: 100050 });
+      outOfRangeHandle.setWindow({ start: 100000, end: 100050 });
     }),
     makeButton('Restore window (350-430)', () => {
-      controlTarget.setWindow({ ...diffWindow });
+      outOfRangeHandle.setWindow({ ...diffWindow });
     }),
   ]);
 

@@ -1484,6 +1484,57 @@ function renderWindowedDemo() {
   });
   fileInstance.render({ file: newFile, fileContainer: fileContainer2 });
   fileInstances.push(fileInstance);
+
+  // ── Windowed diff with the built-in separator ───────────────────────────
+  // Neither instance above exercises the built-in line-info separator: both
+  // supply renderWindowSeparator, which fully replaces it. This instance
+  // omits that hook, so the default "N hidden lines" label and expander are
+  // what actually render for a host that does not customize fold rendering.
+  wrapper.appendChild(
+    makeHeading(
+      'Windowed FileDiff (built-in separator) — lines 350-430 (unified, 8 context lines)'
+    )
+  );
+
+  let builtInWindowState = { ...diffWindow };
+  const builtInContainer = document.createElement(DIFFS_TAG_NAME);
+  wrapper.appendChild(builtInContainer);
+
+  const builtInInstance = new FileDiff<LineCommentMetadata>({
+    theme: DEMO_THEME,
+    themeType,
+    diffStyle: 'unified',
+    window: builtInWindowState,
+    windowContextLines: 8,
+    onWindowExpand(fold) {
+      const step = 20;
+      if (fold.boundary === 'above') {
+        builtInWindowState = {
+          start: Math.max(1, builtInWindowState.start - step),
+          end: builtInWindowState.end,
+        };
+      } else if (fold.boundary === 'below') {
+        builtInWindowState = {
+          start: builtInWindowState.start,
+          end: builtInWindowState.end + step,
+        };
+      } else {
+        return false;
+      }
+      builtInInstance.setOptions({
+        ...builtInInstance.options,
+        window: builtInWindowState,
+      });
+      builtInInstance.render({
+        fileDiff,
+        fileContainer: builtInContainer,
+        forceRender: true,
+      });
+      return true;
+    },
+  });
+  builtInInstance.render({ fileDiff, fileContainer: builtInContainer });
+  diffInstances.push(builtInInstance);
 }
 
 const renderWindowedButton = document.getElementById('render-windowed');

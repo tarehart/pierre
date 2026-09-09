@@ -33,11 +33,6 @@ import { areFileRenderOptionsEqual } from '../utils/areFileRenderOptionsEqual';
 import { areFileTargetsEqual } from '../utils/areFileTargetsEqual';
 import { areRenderRangesEqual } from '../utils/areRenderRangesEqual';
 import { linesFromFileContents } from '../utils/computeFileOffsets';
-import type {
-  DiffWindow,
-  WindowFold,
-  WindowReveal,
-} from '../utils/computeWindowedDiffRows';
 import {
   computeWindowedFileRows,
   fileSeparatorToFold,
@@ -67,6 +62,11 @@ import {
 import { isDefaultRenderRange } from '../utils/isDefaultRenderRange';
 import { isFilePlainText } from '../utils/isFilePlainText';
 import { renderFileWithHighlighter } from '../utils/renderFileWithHighlighter';
+import type {
+  DiffWindow,
+  WindowFold,
+  WindowReveal,
+} from '../utils/windowingCore';
 import type { WorkerPoolManager } from '../worker';
 
 type AnnotationLineMap<LAnnotation> = Record<

@@ -201,6 +201,29 @@ export interface DiffWindowRenderState {
   hasSeparatorRenderer?: boolean;
 }
 
+// Shallow equality for setWindowState's change check. `reveal` is a stable
+// Map instance the host mutates in place across renders (see
+// FileDiff.syncWindowState/File.syncWindowState) rather than reassigning, so
+// reference equality on it correctly detects "same window, same accumulated
+// reveals" without walking its entries.
+function areWindowStatesEqual(
+  a: DiffWindowRenderState | undefined,
+  b: DiffWindowRenderState | undefined
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a == null || b == null) {
+    return false;
+  }
+  return (
+    a.window.start === b.window.start &&
+    a.window.end === b.window.end &&
+    a.reveal === b.reveal &&
+    (a.hasSeparatorRenderer ?? false) === (b.hasSeparatorRenderer ?? false)
+  );
+}
+
 export interface DiffHunksRendererOptionsWithDefaults extends Omit<
   BaseDiffOptionsWithDefaults,
   'themeType'
@@ -594,6 +617,17 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
    * `undefined` to leave windowed mode and render the whole diff again.
    */
   public setWindowState(windowState: DiffWindowRenderState | undefined): void {
+    // syncWindowState (FileDiff/File) now runs on every render (see the
+    // render-resync fix), which calls setWindowState even when the window
+    // has not changed at all. clearRenderCache() forces the next render to
+    // redo highlighting from scratch, so clearing it unconditionally would
+    // defeat render caching for every windowed render, not just the ones
+    // that actually change the window or its reveals. Only clear when
+    // something about the windowed state genuinely changed.
+    if (areWindowStatesEqual(this.windowState, windowState)) {
+      this.windowState = windowState;
+      return;
+    }
     this.windowState = windowState;
     this.clearRenderCache();
   }

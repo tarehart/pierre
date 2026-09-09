@@ -28,6 +28,10 @@ export interface BaseFold {
   end: number;
 }
 
+/** Stable identity for the above/below boundary folds, shared by both windowing engines. */
+export const WINDOW_ABOVE_ID = 'window:above';
+export const WINDOW_BELOW_ID = 'window:below';
+
 /**
  * Clamp the requested window to the file's real new-line extent.
  * Returns an empty range (`end < start`) when nothing maps inside.
@@ -188,4 +192,63 @@ export function newLineRange(
     if (entry.newLine > max) max = entry.newLine;
   }
   return max >= min ? [min, max] : undefined;
+}
+
+/**
+ * New-side line range of interest, one-based and inclusive on both ends.
+ * `start`/`end` address lines in the *new* file (the side authors reason
+ * about). A range that starts past the end of the file, or whose `end`
+ * precedes its `start`, selects nothing and collapses the whole diff.
+ *
+ * Shared by both windowing engines: a windowed file has no "new" side of its
+ * own, but reuses this same range shape to select the line range of interest.
+ */
+export interface DiffWindow {
+  start: number;
+  end: number;
+}
+
+/** How many lines a reader has peeled off a fold's top and bottom edges. */
+export interface FoldReveal {
+  fromStart: number;
+  fromEnd: number;
+}
+
+/**
+ * Reader-driven reveals accumulated from separator clicks, keyed by fold id
+ * (an engine's above/below boundary ids, or `interior:<ordinal>`, numbered in
+ * document order over the reveal-free base layout so ids stay stable as folds
+ * shrink). Every fold peels the same way as a normal collapsed region:
+ * `fromStart` shows lines at the top edge, `fromEnd` at the bottom edge, and
+ * revealed lines render as expanded context that is never re-folded.
+ */
+export type WindowReveal = Map<string, FoldReveal>;
+
+export function createEmptyReveal(): WindowReveal {
+  return new Map();
+}
+
+/**
+ * The public, render-agnostic view of a folded run of hidden rows, shared by
+ * both windowing engines' host-facing hooks (`renderWindowSeparator`,
+ * `onWindowExpand`). The host decides how to draw it and what an expander
+ * click does. Only relevant when content is rendered with a `window`.
+ */
+export interface WindowFold {
+  /** Stable fold id, also the routing key for reveals. */
+  foldId: string;
+  /**
+   * Where the fold sits relative to the window. Only `above`/`below` boundary
+   * folds can reach a neighbouring snippet; `interior` folds are inside the
+   * window and safe to expand in place.
+   */
+  boundary: 'above' | 'below' | 'interior';
+  /** Rendered rows currently hidden behind the fold. */
+  collapsedLines: number;
+  /** True when the hidden run still contains a real change (ground truth). */
+  containsChanges: boolean;
+  /** One-based new-file range `[start, end]` the fold hides, if contiguous. */
+  newLineRange: [number, number] | undefined;
+  /** Whether the fold can still peel from each edge. */
+  expandable: { up: boolean; down: boolean };
 }

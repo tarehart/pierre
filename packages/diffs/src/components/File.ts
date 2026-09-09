@@ -61,13 +61,6 @@ import { areLineAnnotationsEqual } from '../utils/areLineAnnotationsEqual';
 import { arePrePropertiesEqual } from '../utils/arePrePropertiesEqual';
 import { areRenderRangesEqual } from '../utils/areRenderRangesEqual';
 import { areThemesEqual } from '../utils/areThemesEqual';
-import type {
-  DiffWindow,
-  FoldReveal,
-  WindowFold,
-  WindowReveal,
-} from '../utils/computeWindowedDiffRows';
-import { createEmptyReveal } from '../utils/computeWindowedDiffRows';
 import { createAnnotationWrapperNode } from '../utils/createAnnotationWrapperNode';
 import { createGutterUtilityContentNode } from '../utils/createGutterUtilityContentNode';
 import { createUnsafeCSSStyleNode } from '../utils/createUnsafeCSSStyleNode';
@@ -95,6 +88,13 @@ import { isSafari } from '../utils/platform';
 import { prerenderHTMLIfNecessary } from '../utils/prerenderHTMLIfNecessary';
 import { getMeasuredScrollbarGutter } from '../utils/scrollbarGutter';
 import { setPreNodeProperties } from '../utils/setWrapperNodeProps';
+import type {
+  DiffWindow,
+  FoldReveal,
+  WindowFold,
+  WindowReveal,
+} from '../utils/windowingCore';
+import { createEmptyReveal } from '../utils/windowingCore';
 import type { WorkerPoolManager } from '../worker';
 import { DiffsContainerLoaded } from './web-components';
 

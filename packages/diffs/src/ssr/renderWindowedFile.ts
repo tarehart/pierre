@@ -4,12 +4,9 @@ import {
   type FileWindowRenderState,
 } from '../renderers/FileRenderer';
 import type { FileContents, LineAnnotation } from '../types';
-import type {
-  DiffWindow,
-  WindowReveal,
-} from '../utils/computeWindowedDiffRows';
-import { createEmptyReveal } from '../utils/computeWindowedDiffRows';
 import { shouldUseTokenTransformer } from '../utils/shouldUseTokenTransformer';
+import type { DiffWindow, WindowReveal } from '../utils/windowingCore';
+import { createEmptyReveal } from '../utils/windowingCore';
 import { preloadFileHTML } from './preloadFile';
 
 export interface RenderWindowedFileOptions<

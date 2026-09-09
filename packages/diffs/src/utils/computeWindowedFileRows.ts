@@ -1,20 +1,16 @@
-import type {
-  DiffWindow,
-  WindowFold,
-  WindowReveal,
-} from './computeWindowedDiffRows';
-import {
-  createEmptyReveal,
-  WINDOW_ABOVE_ID,
-  WINDOW_BELOW_ID,
-} from './computeWindowedDiffRows';
 import {
   type BaseFold,
   clampWindow,
+  createEmptyReveal,
+  type DiffWindow,
   enumerateFolds,
   markBaseHidden,
   newLineRange,
+  WINDOW_ABOVE_ID,
+  WINDOW_BELOW_ID,
   type WindowableFlatRow,
+  type WindowFold,
+  type WindowReveal,
 } from './windowingCore';
 
 export interface ComputeWindowedFileRowsProps {

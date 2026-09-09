@@ -3,46 +3,28 @@ import type { FileDiffMetadata } from '../types';
 import { type DiffLineCallbackProps, iterateOverDiff } from './iterateOverDiff';
 import {
   clampWindow,
+  createEmptyReveal,
+  type DiffWindow,
   enumerateFolds,
   markBaseHidden,
   newLineRange,
+  WINDOW_ABOVE_ID,
+  WINDOW_BELOW_ID,
   type WindowableFlatRow,
+  type WindowReveal,
 } from './windowingCore';
 
-/**
- * New-side line range of interest, one-based and inclusive on both ends.
- * `start`/`end` address lines in the *new* file (the side authors reason
- * about). A range that starts past the end of the file, or whose `end`
- * precedes its `start`, selects nothing and collapses the whole diff.
- */
-export interface DiffWindow {
-  start: number;
-  end: number;
-}
-
-/** Stable identity for the above/below boundary folds. */
-export const WINDOW_ABOVE_ID = 'window:above';
-export const WINDOW_BELOW_ID = 'window:below';
-
-/** How many lines a reader has peeled off a fold's top and bottom edges. */
-export interface FoldReveal {
-  fromStart: number;
-  fromEnd: number;
-}
-
-/**
- * Reader-driven reveals accumulated from separator clicks, keyed by fold id
- * (`WINDOW_ABOVE_ID`, `WINDOW_BELOW_ID`, or `interior:<ordinal>`, numbered in
- * document order over the reveal-free base layout so ids stay stable as folds
- * shrink). Every fold peels the same way as a normal collapsed region:
- * `fromStart` shows lines at the top edge, `fromEnd` at the bottom edge, and
- * revealed lines render as expanded context that is never re-folded.
- */
-export type WindowReveal = Map<string, FoldReveal>;
-
-export function createEmptyReveal(): WindowReveal {
-  return new Map();
-}
+export type {
+  DiffWindow,
+  FoldReveal,
+  WindowFold,
+  WindowReveal,
+} from './windowingCore';
+export {
+  createEmptyReveal,
+  WINDOW_ABOVE_ID,
+  WINDOW_BELOW_ID,
+} from './windowingCore';
 
 export interface ComputeWindowedDiffRowsProps {
   diff: FileDiffMetadata;
@@ -128,28 +110,10 @@ export interface WindowedDiffResult {
 
 /**
  * One folded region handed to host windowing hooks (`onExpand`,
- * `renderWindowSeparator`). It is the public, render-agnostic view of a
- * `WindowedDiffSeparatorRow`: the host decides how to draw it and what an
- * expander click does. Only relevant when a diff is rendered with a `window`.
+ * `renderWindowSeparator`). It is the render-agnostic view of a
+ * `WindowedDiffSeparatorRow` -- see `WindowFold` (re-exported above from
+ * `windowingCore`, shared with the file windowing engine) for its shape.
  */
-export interface WindowFold {
-  /** Stable fold id, also the routing key for reveals. */
-  foldId: string;
-  /**
-   * Where the fold sits relative to the window. Only `above`/`below` boundary
-   * folds can reach a neighbouring snippet; `interior` folds are inside the
-   * window and safe to expand in place.
-   */
-  boundary: 'above' | 'below' | 'interior';
-  /** Rendered rows currently hidden behind the fold. */
-  collapsedLines: number;
-  /** True when the hidden run still contains a real change (ground truth). */
-  containsChanges: boolean;
-  /** One-based new-file range `[start, end]` the fold hides, if contiguous. */
-  newLineRange: [number, number] | undefined;
-  /** Whether the fold can still peel from each edge. */
-  expandable: { up: boolean; down: boolean };
-}
 
 interface FlatRow extends WindowableFlatRow {
   row: DiffLineCallbackProps;

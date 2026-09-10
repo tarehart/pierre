@@ -27,6 +27,7 @@ import {
 } from '../utils/parseMergeConflictDiffFromFile';
 import { resolveConflict as resolveConflictDiff } from '../utils/resolveConflict';
 import { shouldUseTokenTransformer } from '../utils/shouldUseTokenTransformer';
+import { shouldWireHunkExpandHandler } from '../utils/shouldWireHunkExpandHandler';
 import { splitFileContents } from '../utils/splitFileContents';
 import type { WorkerPoolManager } from '../worker';
 import {
@@ -171,9 +172,10 @@ export class UnresolvedFile<LAnnotation = undefined> extends FileDiff<
     this.interactionManager.setOptions(
       pluckInteractionOptions(
         this.options,
-        typeof this.options.hunkSeparators === 'function' ||
-          (this.options.hunkSeparators ?? 'line-info') === 'line-info' ||
-          this.options.hunkSeparators === 'line-info-basic'
+        shouldWireHunkExpandHandler(
+          this.options.hunkSeparators,
+          this.options.window
+        )
           ? this.handleExpandHunk
           : undefined,
         this.getLineIndex,

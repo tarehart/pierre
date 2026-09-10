@@ -130,6 +130,7 @@ import { isSafari } from '../utils/platform';
 import { prerenderHTMLIfNecessary } from '../utils/prerenderHTMLIfNecessary';
 import { getMeasuredScrollbarGutter } from '../utils/scrollbarGutter';
 import { setPreNodeProperties } from '../utils/setWrapperNodeProps';
+import { shouldWireHunkExpandHandler } from '../utils/shouldWireHunkExpandHandler';
 import { splitFileContents } from '../utils/splitFileContents';
 import { recomputeDiffRenderLineCounts } from '../utils/updateDiffHunks';
 import {
@@ -509,9 +510,7 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
       'diff',
       pluckInteractionOptions(
         options,
-        typeof options.hunkSeparators === 'function' ||
-          (options.hunkSeparators ?? 'line-info') === 'line-info' ||
-          options.hunkSeparators === 'line-info-basic'
+        shouldWireHunkExpandHandler(options.hunkSeparators, options.window)
           ? this.handleExpandHunk
           : undefined,
         this.getLineIndex
@@ -716,9 +715,10 @@ export class FileDiff<LAnnotation = undefined, Caret = undefined> {
     this.interactionManager.setOptions(
       pluckInteractionOptions(
         this.options,
-        typeof this.options.hunkSeparators === 'function' ||
-          (this.options.hunkSeparators ?? 'line-info') === 'line-info' ||
-          this.options.hunkSeparators === 'line-info-basic'
+        shouldWireHunkExpandHandler(
+          this.options.hunkSeparators,
+          this.options.window
+        )
           ? this.handleExpandHunk
           : undefined,
         this.getLineIndex

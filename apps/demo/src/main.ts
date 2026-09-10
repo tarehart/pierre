@@ -1847,11 +1847,24 @@ function renderWindowedDemo() {
   });
 
   // ── 11. Gap 6: window + hunkSeparators 'simple' and 'metadata' ──────────
-  // Until recently, these two hunkSeparators modes made every windowed fold
-  // render nothing (see FileDiff.windowedSeparatorModes.test.ts). Regression
-  // tests now cover this at the unit level; these instances demo it live.
+  // Two separate defects hid behind these two hunkSeparators modes:
+  // 1. Rendering: every windowed fold rendered nothing at all (see
+  //    FileDiff.windowedSeparatorModes.test.ts). Fixed -- a windowed fold now
+  //    always renders a line-info-shaped label and expand button here,
+  //    regardless of hunkSeparators mode.
+  // 2. Click routing: even after the fold rendered correctly, clicking its
+  //    expand button did nothing, because the InteractionManager wiring only
+  //    turned on the expand handler for 'line-info'/'line-info-basic'/a
+  //    custom function -- with no exception for a windowed fold, which needs
+  //    the handler in every mode (see
+  //    FileDiff.windowedClickRouting.test.ts and
+  //    UnresolvedFile.windowedClickRouting.test.ts, which dispatch a real
+  //    click at the rendered button rather than calling expandHunk directly).
+  //    Fixed -- click the folds below; they expand like every other windowed
+  //    instance on this page.
   buildWindowedFileDiff(wrapper, fileDiff, {
     heading: "Windowed FileDiff — hunkSeparators: 'simple'",
+    note: 'Windowed folds render and expand the same way regardless of hunkSeparators mode.',
     diffStyle: 'unified',
     window: diffWindow,
     windowContextLines: 8,
@@ -1859,6 +1872,7 @@ function renderWindowedDemo() {
   });
   buildWindowedFileDiff(wrapper, fileDiff, {
     heading: "Windowed FileDiff — hunkSeparators: 'metadata'",
+    note: 'Windowed folds render and expand the same way regardless of hunkSeparators mode.',
     diffStyle: 'unified',
     window: diffWindow,
     windowContextLines: 8,

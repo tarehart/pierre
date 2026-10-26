@@ -1,0 +1,319 @@
+import { DEFAULT_WINDOW_CONTEXT_LINES } from '../constants';
+import type { FileDiffMetadata } from '../types';
+import { type DiffLineCallbackProps, iterateOverDiff } from './iterateOverDiff';
+import {
+  clampWindow,
+  createEmptyReveal,
+  type DiffWindow,
+  enumerateFolds,
+  markBaseHidden,
+  newLineRange,
+  WINDOW_ABOVE_ID,
+  WINDOW_BELOW_ID,
+  type WindowableFlatRow,
+  type WindowReveal,
+} from './windowingCore';
+
+export type {
+  DiffWindow,
+  FoldReveal,
+  WindowFold,
+  WindowReveal,
+} from './windowingCore';
+export {
+  createEmptyReveal,
+  WINDOW_ABOVE_ID,
+  WINDOW_BELOW_ID,
+} from './windowingCore';
+
+export interface ComputeWindowedDiffRowsProps {
+  diff: FileDiffMetadata;
+  window: DiffWindow;
+  /**
+   * Row space to flatten into. `'unified'` (default) emits a paired change as
+   * two rows (deletion then addition); `'split'` emits it as one row carrying
+   * both sides. Windowing is otherwise identical: the folds are the same
+   * new-line ranges, just cut over a different row stream.
+   */
+  diffStyle?: 'unified' | 'split';
+  /**
+   * Unchanged context lines kept on each side of a change *inside* the window,
+   * like a conventional diff's `-U<n>`. An unchanged run between two changes
+   * shows in full when its length is `<= 2 * contextLines`; a longer run keeps
+   * `contextLines` at each edge and folds only the middle into an interior
+   * separator. A run touching the window edge keeps context only on its
+   * change-facing side. Defaults to `DEFAULT_WINDOW_CONTEXT_LINES`.
+   */
+  contextLines?: number;
+  /** Reader-driven reveals accumulated from separator clicks. */
+  reveal?: WindowReveal;
+}
+
+/** A single new-file diff line kept for display, with its provenance. */
+export interface WindowedDiffLineRow {
+  kind: 'line';
+  row: DiffLineCallbackProps;
+  /**
+   * One-based new-file line number for this row, or `undefined` for a pure
+   * deletion row (which has no new-side line). Used to place the row relative
+   * to the window.
+   */
+  newLine: number | undefined;
+  /** One-based old-file line number, or `undefined` for a pure addition. */
+  oldLine: number | undefined;
+}
+
+/**
+ * A collapsed run of rows folded behind a single separator. `boundary`
+ * distinguishes the above/below-window folds (which the request lets authors
+ * label with prose) from interior folds of long unchanged runs.
+ */
+export interface WindowedDiffSeparatorRow {
+  kind: 'separator';
+  /** Stable identity used to route expansion clicks back to this fold. */
+  id: string;
+  /** Where this fold sits relative to the window. */
+  boundary: 'above' | 'below' | 'interior';
+  /** Number of rendered rows hidden behind this separator (after reveals). */
+  collapsedLines: number;
+  /**
+   * True when the collapsed run still contains at least one real change
+   * (addition or deletion). Pierre knows this because it diffed the whole file,
+   * so a boundary separator can honestly say "3 changes above" instead of
+   * pretending everything hidden is unchanged. Interior folds are unchanged by
+   * construction and are always false.
+   */
+  containsChanges: boolean;
+  /** Whether the reader can expand upward out of this fold. */
+  canExpandUp: boolean;
+  /** Whether the reader can expand downward out of this fold. */
+  canExpandDown: boolean;
+  /**
+   * One-based new-file line range `[start, end]` (inclusive) that this fold
+   * still hides, when it maps to a contiguous new-side range. A fold made
+   * entirely of pure deletions has no new-side extent and leaves this
+   * `undefined`.
+   */
+  newLineRange: [number, number] | undefined;
+}
+
+export type WindowedDiffRow = WindowedDiffLineRow | WindowedDiffSeparatorRow;
+
+export interface WindowedDiffResult {
+  /** The display rows in order: kept lines interleaved with fold separators. */
+  rows: WindowedDiffRow[];
+  /** The window as applied after clamping to the file's line range. */
+  appliedWindow: DiffWindow;
+  /** Total rendered rows still hidden across every fold (after reveals). */
+  totalCollapsed: number;
+}
+
+/**
+ * One folded region handed to host windowing hooks (`onExpand`,
+ * `renderWindowSeparator`). It is the render-agnostic view of a
+ * `WindowedDiffSeparatorRow` -- see `WindowFold` (re-exported above from
+ * `windowingCore`, shared with the file windowing engine) for its shape.
+ */
+
+interface FlatRow extends WindowableFlatRow {
+  row: DiffLineCallbackProps;
+  oldLine: number | undefined;
+}
+
+/**
+ * Turn a full non-partial diff into a windowed display model: rows inside
+ * `window` are kept; everything outside collapses to an above/below boundary
+ * separator; long unchanged runs inside the window collapse to interior
+ * separators. Every separator is backed by real diff rows, so the caller can
+ * render it as natively expandable — there is no partial patch to reconcile.
+ *
+ * This is a pure transform over the row stream `iterateOverDiff` already
+ * produces for a fully expanded diff, so it inherits that function's line
+ * bookkeeping instead of recomputing hunk geometry.
+ */
+export function computeWindowedDiffRows({
+  diff,
+  window,
+  diffStyle = 'unified',
+  contextLines = DEFAULT_WINDOW_CONTEXT_LINES,
+  reveal = createEmptyReveal(),
+}: ComputeWindowedDiffRowsProps): WindowedDiffResult {
+  if (diff.isPartial) {
+    throw new Error(
+      'computeWindowedDiffRows: windowing requires a non-partial diff ' +
+        '(both file blobs). A partial patch-parsed diff cannot be windowed ' +
+        'because it does not know what lies outside its hunks.'
+    );
+  }
+
+  // 1. Flatten the fully-expanded diff into a flat, in-order row list. With
+  //    `expandedHunks: true` the iterator emits every line of the file exactly
+  //    once, in order, with correct line numbers on each side. In split style a
+  //    paired change is one row (both sides); in unified it is two rows.
+  const flat: FlatRow[] = [];
+  iterateOverDiff({
+    diff,
+    diffStyle,
+    expandedHunks: true,
+    callback: (row) => {
+      flat.push({
+        row,
+        newLine: row.additionLine?.lineNumber,
+        oldLine: row.deletionLine?.lineNumber,
+        isChange: row.type === 'change',
+        inWindow: false,
+        hidden: false,
+      });
+    },
+  });
+
+  const appliedWindow = clampWindow(window, flat);
+  const empty = appliedWindow.end < appliedWindow.start;
+
+  // 2. Mark in-window rows. A row with a new-side line is in-window when that
+  //    line is within range. Pure deletions have no new line; they belong to
+  //    the window iff an adjacent kept new-side line does, so they ride along
+  //    with the change they are part of.
+  if (!empty) {
+    for (const entry of flat) {
+      if (entry.newLine != null) {
+        entry.inWindow =
+          entry.newLine >= appliedWindow.start &&
+          entry.newLine <= appliedWindow.end;
+      }
+    }
+    attachPureDeletionsToWindow(flat);
+  }
+
+  // 3. Decide base visibility (reveal-free), then group maximal contiguous
+  //    hidden runs into folds, cut at the window boundary (enumerateFolds). So
+  //    an above/below fold and an in-window interior fold can sit next to
+  //    each other as two separators; within either region a run is one fold.
+  //    Fold ids come from the base layout so they stay stable as the reader
+  //    reveals lines (a fold that shrinks or fully opens keeps its id and never
+  //    renumbers its neighbours), which is what lets expansion clicks route
+  //    back to the right fold across re-renders.
+  markBaseHidden(flat, empty, contextLines);
+  const folds = enumerateFolds(flat, WINDOW_ABOVE_ID, WINDOW_BELOW_ID);
+
+  const rows: WindowedDiffRow[] = [];
+  let totalCollapsed = 0;
+  let index = 0;
+  let foldCursor = 0;
+
+  while (index < flat.length) {
+    const entry = flat[index];
+    if (!entry.hidden) {
+      rows.push(toLineRow(entry));
+      index += 1;
+      continue;
+    }
+    const fold = folds[foldCursor];
+    if (fold == null || fold.start !== index) {
+      throw new Error('computeWindowedDiffRows: fold bookkeeping desync');
+    }
+    foldCursor += 1;
+    index = fold.end;
+    totalCollapsed += emitFold(flat.slice(fold.start, fold.end), {
+      id: fold.id,
+      boundary: fold.boundary,
+      reveal,
+      out: rows,
+    });
+  }
+
+  return { rows, appliedWindow, totalCollapsed };
+}
+
+/**
+ * Give each pure-deletion row the window membership of the nearest kept new-side
+ * line it is adjacent to. Deletions render between the surrounding new lines, so
+ * a deletion that sits directly against an in-window addition/context row is
+ * itself in-window; one buried in an out-of-window region stays out.
+ */
+function attachPureDeletionsToWindow(flat: FlatRow[]): void {
+  for (let i = 0; i < flat.length; i++) {
+    const entry = flat[i];
+    if (entry.newLine != null || entry.inWindow) {
+      continue;
+    }
+    if (hasInWindowNeighbor(flat, i, -1) || hasInWindowNeighbor(flat, i, 1)) {
+      entry.inWindow = true;
+    }
+  }
+}
+
+function hasInWindowNeighbor(
+  flat: FlatRow[],
+  from: number,
+  step: -1 | 1
+): boolean {
+  for (let i = from + step; i >= 0 && i < flat.length; i += step) {
+    const entry = flat[i];
+    if (entry.newLine == null) {
+      continue;
+    }
+    return entry.inWindow;
+  }
+  return false;
+}
+
+interface EmitFoldProps {
+  id: string;
+  boundary: 'above' | 'below' | 'interior';
+  reveal: WindowReveal;
+  out: WindowedDiffRow[];
+}
+
+/**
+ * Emit one folded run, applying its reveal: show `fromStart` lines at the top
+ * and `fromEnd` at the bottom as expanded context, folding whatever remains in
+ * the middle behind a single expandable separator. Revealed lines are never
+ * re-folded — this matches how a normal collapsed region peels open. Returns
+ * the number of lines still hidden.
+ */
+function emitFold(
+  run: FlatRow[],
+  { id, boundary, reveal, out }: EmitFoldProps
+): number {
+  const revealed = reveal.get(id);
+  const fromStart = Math.min(Math.max(revealed?.fromStart ?? 0, 0), run.length);
+  const fromEnd = Math.min(
+    Math.max(revealed?.fromEnd ?? 0, 0),
+    run.length - fromStart
+  );
+  const hiddenCount = run.length - fromStart - fromEnd;
+
+  for (let i = 0; i < fromStart; i++) {
+    out.push(toLineRow(run[i]));
+  }
+  if (hiddenCount > 0) {
+    const hiddenRun = run.slice(fromStart, run.length - fromEnd);
+    // Every fold can peel from both edges; the host owns how far by widening
+    // the window on an onExpand boundary-fold click, or the interior reveal
+    // grows in place. Both directions are always offered when lines remain.
+    out.push({
+      kind: 'separator',
+      id,
+      boundary,
+      collapsedLines: hiddenCount,
+      containsChanges: hiddenRun.some((entry) => entry.isChange),
+      canExpandUp: true,
+      canExpandDown: true,
+      newLineRange: newLineRange(hiddenRun),
+    });
+  }
+  for (let i = run.length - fromEnd; i < run.length; i++) {
+    out.push(toLineRow(run[i]));
+  }
+  return hiddenCount;
+}
+
+function toLineRow(entry: FlatRow): WindowedDiffLineRow {
+  return {
+    kind: 'line',
+    row: entry.row,
+    newLine: entry.newLine,
+    oldLine: entry.oldLine,
+  };
+}

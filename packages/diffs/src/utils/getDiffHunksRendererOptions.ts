@@ -1,11 +1,16 @@
-import type { FileDiffOptions } from '../components/FileDiff';
+import type {
+  FileDiffOptions,
+  FileDiffWindowOptions,
+} from '../components/FileDiff';
 import type { DiffHunksRendererOptions } from '../renderers/DiffHunksRenderer';
 import { shouldUseTokenTransformer } from './shouldUseTokenTransformer';
 
 // Build the renderer option snapshot with direct property reads. CodeView item
 // options may inherit prototype getters, so object spread can miss values.
 export function getDiffHunksRendererOptions<LAnnotation, Caret>(
-  options: FileDiffOptions<LAnnotation, Caret> | undefined
+  options:
+    | (FileDiffOptions<LAnnotation, Caret> & FileDiffWindowOptions)
+    | undefined
 ): DiffHunksRendererOptions {
   return {
     theme: options?.theme,
@@ -36,5 +41,10 @@ export function getDiffHunksRendererOptions<LAnnotation, Caret>(
     expansionLineCount: options?.expansionLineCount,
     headerRenderMode:
       options?.renderCustomHeader != null ? 'custom' : 'default',
+    // Windowing-only; added only when set so non-windowed snapshots keep
+    // exactly their existing keys.
+    ...(options?.windowContextLines != null && {
+      windowContextLines: options.windowContextLines,
+    }),
   };
 }

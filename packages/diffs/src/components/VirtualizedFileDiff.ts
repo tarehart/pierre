@@ -21,6 +21,7 @@ import { areDiffTargetsEqual } from '../utils/areDiffTargetsEqual';
 import { areFilesEqual } from '../utils/areFilesEqual';
 import { areObjectsEqual } from '../utils/areObjectsEqual';
 import { areOptionsEqual } from '../utils/areOptionsEqual';
+import { assertNotWindowed } from '../utils/assertNotWindowed';
 import { awaitWithTimeout } from '../utils/awaitWithTimeout';
 import { computeEstimatedDiffHeights } from '../utils/computeEstimatedDiffHeights';
 import {
@@ -156,6 +157,8 @@ export class VirtualizedFileDiff<
   // so layout can use the newly available content. CodeView updates it during
   // its layout pass.
   private pendingRender: PendingRender | undefined;
+  // Narrowed from the base class: virtualized hosts cannot fold a window.
+  declare public options: FileDiffOptions<LAnnotation, Caret>;
 
   constructor(
     options: FileDiffOptions<LAnnotation, Caret> | undefined,
@@ -164,6 +167,7 @@ export class VirtualizedFileDiff<
     workerManager?: WorkerPoolManager,
     requestOwnerRender?: () => void
   ) {
+    assertNotWindowed(options, 'VirtualizedFileDiff');
     super(options, workerManager, requestOwnerRender);
     this.virtualizer = virtualizer;
     this.metrics = computeVirtualFileMetrics(metrics);
@@ -271,6 +275,7 @@ export class VirtualizedFileDiff<
     }
 
     if (options == null) return;
+    assertNotWindowed(options, 'VirtualizedFileDiff');
     const { options: previousOptions } = this;
     const optionsChanged = !areOptionsEqual(previousOptions, options);
     const layoutChanged =
@@ -1390,6 +1395,8 @@ export class VirtualizedFileDiff<
     lineAnnotations,
     ...fileInputProps
   }: FileDiffRenderProps<LAnnotation> = {}): boolean {
+    // Also covers an options object assigned directly, which skips setOptions.
+    assertNotWindowed(this.options, 'VirtualizedFileDiff');
     const fileInput = getDiffFileInput(
       fileInputProps,
       'VirtualizedFileDiff.render'

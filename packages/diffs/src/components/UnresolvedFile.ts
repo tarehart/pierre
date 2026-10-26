@@ -28,6 +28,7 @@ import {
 } from '../utils/parseMergeConflictDiffFromFile';
 import { resolveConflict as resolveConflictDiff } from '../utils/resolveConflict';
 import { shouldUseTokenTransformer } from '../utils/shouldUseTokenTransformer';
+import { shouldWireHunkExpandHandler } from '../utils/shouldWireHunkExpandHandler';
 import { splitFileContents } from '../utils/splitFileContents';
 import type { WorkerPoolManager } from '../worker';
 import {
@@ -36,6 +37,7 @@ import {
   type FileDiffRenderBaseProps,
   type FileDiffRenderData,
   type FileDiffRenderInput,
+  type FileDiffWindowOptions,
 } from './FileDiff';
 
 export type RenderMergeConflictActions<LAnnotation> = (
@@ -163,7 +165,8 @@ export class UnresolvedFile<LAnnotation = undefined> extends FileDiff<
     new Map();
 
   constructor(
-    public override options: UnresolvedFileOptions<LAnnotation> = {
+    public override options: UnresolvedFileOptions<LAnnotation> &
+      FileDiffWindowOptions = {
       theme: DEFAULT_THEMES,
     },
     workerManager?: WorkerPoolManager | undefined,
@@ -174,7 +177,9 @@ export class UnresolvedFile<LAnnotation = undefined> extends FileDiff<
   }
 
   override setOptions(
-    options: UnresolvedFileOptions<LAnnotation> | undefined
+    options:
+      | (UnresolvedFileOptions<LAnnotation> & FileDiffWindowOptions)
+      | undefined
   ): void {
     if (options == null) {
       return;
@@ -191,6 +196,7 @@ export class UnresolvedFile<LAnnotation = undefined> extends FileDiff<
 
     this.options = options;
     this.hunksRenderer.setOptions(this.getHunksRendererOptions(options));
+    this.syncWindowState();
     this.syncInteractionOptions();
   }
 
@@ -203,9 +209,10 @@ export class UnresolvedFile<LAnnotation = undefined> extends FileDiff<
     this.interactionManager.setOptions(
       pluckInteractionOptions(
         this.options,
-        typeof this.options.hunkSeparators === 'function' ||
-          (this.options.hunkSeparators ?? 'line-info') === 'line-info' ||
-          this.options.hunkSeparators === 'line-info-basic'
+        shouldWireHunkExpandHandler(
+          this.options.hunkSeparators,
+          this.options.window
+        )
           ? this.handleExpandHunk
           : undefined,
         this.getLineIndex,

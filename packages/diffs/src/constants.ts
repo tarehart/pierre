@@ -60,6 +60,9 @@ export const DIFFS_SCROLLBAR_GUTTER_MEASURED_PROPERTY =
   '--diffs-scrollbar-gutter-measured';
 
 export const DEFAULT_COLLAPSED_CONTEXT_THRESHOLD = 1;
+// Default unchanged context lines kept on each side of a change inside a
+// windowed diff (git `-U3`-style). Only used by the windowed-diff engine.
+export const DEFAULT_WINDOW_CONTEXT_LINES = 3;
 export const DEFAULT_TOKENIZE_MAX_LENGTH = 100_000;
 export const DEFAULT_VIRTUAL_FILE_METRICS: VirtualFileMetrics = {
   hunkLineCount: 50,

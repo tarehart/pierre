@@ -2,10 +2,12 @@ import {
   DEFAULT_THEMES,
   DIFFS_TAG_NAME,
   type DiffsThemeNames,
+  type DiffWindow,
   File,
   type FileContents,
   FileDiff,
   type FileDiffContentsLoader,
+  type FileDiffMetadata,
   type FileDiffOptions,
   type FileOptions,
   FileStream,
@@ -21,6 +23,7 @@ import {
   VirtualizedFile,
   VirtualizedFileDiff,
   Virtualizer,
+  type WindowFold,
 } from '@pierre/diffs';
 import { Editor } from '@pierre/diffs/edit';
 import type { WorkerPoolManager } from '@pierre/diffs/worker';
@@ -59,6 +62,10 @@ import {
   renderAnnotation,
   renderDiffAnnotation,
 } from './utils/renderAnnotation';
+import {
+  mountWindowedReactSections,
+  type WindowedReactSections,
+} from './windowedReact';
 
 // FAKE_DIFF_LINE_ANNOTATIONS.length = 0;
 // FAKE_LINE_ANNOTATIONS.length = 0;
@@ -126,6 +133,8 @@ const diffInstances: (
 const fileInstances: File<LineCommentMetadata>[] = [];
 const streamingInstances: FileStream[] = [];
 const conflictInstances: UnresolvedFile<LineCommentMetadata>[] = [];
+// React roots the windowed demo mounts.
+const reactSections: WindowedReactSections[] = [];
 
 interface FileStreamCodeConfigsItem {
   content: string;
@@ -152,6 +161,9 @@ function cleanupInstances(container: HTMLElement) {
       instance.cleanUp();
     }
     instances.length = 0;
+  }
+  for (const section of reactSections.splice(0)) {
+    section.unmount();
   }
   cleanupCodeView(container);
   container.textContent = '';
@@ -803,6 +815,9 @@ if (wrapCheckbox != null) {
       });
       void instance.rerender();
     }
+    for (const section of reactSections) {
+      section.update({ overflow: checked ? 'wrap' : 'scroll' });
+    }
     setCodeViewOverflow(checked ? 'wrap' : 'scroll');
   });
 }
@@ -924,6 +939,9 @@ function toggleTheme() {
     for (const instance of instances) {
       instance.setThemeType(nextTheme);
     }
+  }
+  for (const section of reactSections) {
+    section.update({ themeType: nextTheme });
   }
   setCodeViewThemeType(nextTheme);
 }
@@ -1335,6 +1353,237 @@ if (lagRadarCheckbox != null && radar != null) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// Windowed Demo: the `window` option on FileDiff and File.
+// ---------------------------------------------------------------------------
+
+// Custom label for a windowed boundary fold (renderWindowSeparator). The
+// library calls it only for the above/below folds; interior folds always use
+// the built-in separator.
+function makeSeparatorEl(fold: WindowFold): HTMLElement {
+  const btn = document.createElement('button');
+  const count = fold.collapsedLines;
+  const noun = count === 1 ? 'line' : 'lines';
+  const label = `${fold.boundary === 'above' ? '▲' : '▼'} ${count} hidden ${noun}${fold.containsChanges ? ' (includes changes)' : ''}`;
+  btn.textContent = label;
+  btn.style.cssText =
+    'all:unset;cursor:pointer;font:var(--diffs-font-size,13px)/1 var(--diffs-font-family,monospace);' +
+    'color:var(--diffs-fg,currentcolor);opacity:0.6;padding:2px 8px;' +
+    'text-decoration:underline dotted;';
+  return btn;
+}
+
+function makeHeading(text: string): HTMLElement {
+  const h = document.createElement('h3');
+  h.textContent = text;
+  h.style.cssText =
+    'font:bold 14px system-ui,sans-serif;margin:16px 0 4px;color:var(--diffs-fg,currentcolor)';
+  return h;
+}
+
+function makeNote(text: string): HTMLElement {
+  const p = document.createElement('p');
+  p.textContent = text;
+  p.style.cssText =
+    'font:12px system-ui,sans-serif;margin:0 0 8px;color:var(--diffs-fg,currentcolor);opacity:0.7';
+  return p;
+}
+
+// The window widened by `lineCount` lines at the edge of a boundary fold
+// (`Infinity`, from an expand-all or shift-click, reaches the file edge).
+function widenWindowForBoundary(
+  current: DiffWindow,
+  boundary: 'above' | 'below',
+  lineCount: number,
+  lastLine: number
+): DiffWindow {
+  return boundary === 'above'
+    ? { start: Math.max(1, current.start - lineCount), end: current.end }
+    : {
+        start: current.start,
+        end: Math.min(lastLine, current.end + lineCount),
+      };
+}
+
+interface WindowedFileDiffConfig {
+  heading: string;
+  note?: string;
+  diffStyle: 'unified' | 'split';
+  window: DiffWindow;
+  windowContextLines: number;
+  customSeparator?: boolean;
+  // Host-owned expansion of the above/below folds; `widen` re-renders with a
+  // new window. Without it, every fold reveals lines in place.
+  onWindowExpand?: (
+    fold: WindowFold,
+    lineCount: number,
+    current: DiffWindow,
+    widen: (next: DiffWindow) => void
+  ) => boolean | void;
+}
+
+// Builds, renders and registers one windowed FileDiff; returns its container.
+function buildWindowedFileDiff(
+  wrapper: HTMLElement,
+  fileDiff: FileDiffMetadata,
+  config: WindowedFileDiffConfig
+): HTMLElement {
+  wrapper.appendChild(makeHeading(config.heading));
+  if (config.note != null) {
+    wrapper.appendChild(makeNote(config.note));
+  }
+  let windowState: DiffWindow = { ...config.window };
+  const container = document.createElement(DIFFS_TAG_NAME);
+  wrapper.appendChild(container);
+  const widen = (next: DiffWindow) => {
+    windowState = next;
+    instance.setOptions({ ...instance.options, window: windowState });
+    instance.render({ fileDiff, fileContainer: container, forceRender: true });
+  };
+  const { onWindowExpand } = config;
+  const instance: FileDiff<LineCommentMetadata> =
+    new FileDiff<LineCommentMetadata>({
+      theme: DEMO_THEME,
+      themeType: getThemeType(),
+      diffStyle: config.diffStyle,
+      overflow: getWrapped() ? 'wrap' : 'scroll',
+      enableLineSelection: true,
+      window: windowState,
+      windowContextLines: config.windowContextLines,
+      onWindowExpand:
+        onWindowExpand != null
+          ? (fold, lineCount) =>
+              onWindowExpand(fold, lineCount, windowState, widen)
+          : undefined,
+      renderWindowSeparator:
+        config.customSeparator === true ? makeSeparatorEl : undefined,
+    });
+  instance.render({ fileDiff, fileContainer: container });
+  diffInstances.push(instance);
+  return container;
+}
+
+function renderWindowedDemo() {
+  const wrapper = document.getElementById('wrapper');
+  if (wrapper == null) return;
+  cleanupInstances(wrapper);
+
+  const oldFile: FileContents = {
+    name: 'highlighter.ts',
+    contents: FILE_OLD,
+    cacheKey: 'windowed-demo-old',
+  };
+  const newFile: FileContents = {
+    name: 'highlighter.ts',
+    contents: FILE_NEW,
+    cacheKey: 'windowed-demo-new',
+  };
+  const fileDiff = parseDiffFromFile(oldFile, newFile);
+  // One view shows every fold kind: the above fold hides real changes (lines
+  // 1-545 are full of edits), the 64-line unchanged run between the change
+  // blocks near lines 554 and 635 folds into an interior separator at 8
+  // context lines, and the below fold (671-711) hides no change.
+  const diffWindow: DiffWindow = { start: 546, end: 670 };
+  const diffRange = `${diffWindow.start}-${diffWindow.end}`;
+
+  // 1. Built-in separators (split); clicking a fold reveals lines in place.
+  buildWindowedFileDiff(wrapper, fileDiff, {
+    heading: `Windowed FileDiff — built-in separators (split, lines ${diffRange})`,
+    diffStyle: 'split',
+    window: diffWindow,
+    windowContextLines: 8,
+  });
+
+  // 2. renderWindowSeparator draws the above/below folds; the interior fold
+  // keeps the built-in separator.
+  buildWindowedFileDiff(wrapper, fileDiff, {
+    heading: `Windowed FileDiff — custom boundary separators (unified, lines ${diffRange})`,
+    diffStyle: 'unified',
+    window: diffWindow,
+    windowContextLines: 8,
+    customSeparator: true,
+  });
+
+  // 3. Host-owned widening of the boundary folds. The note below the
+  // instance reports each onWindowExpand call and what the widen added.
+  const expandNote = makeNote(
+    'Click the above or below fold: onWindowExpand gets the fold and the lines one step would open (Infinity for Expand all or a shift-click), and widens the window by that much. The interior fold never calls it and opens in place.'
+  );
+  const expandContainer = buildWindowedFileDiff(wrapper, fileDiff, {
+    heading: 'Windowed FileDiff — onWindowExpand widens the boundary folds',
+    diffStyle: 'unified',
+    window: diffWindow,
+    windowContextLines: 8,
+    customSeparator: true,
+    onWindowExpand: (fold, lineCount, current, widen) => {
+      // Never true (interior folds do not call the hook); narrows the type.
+      if (fold.boundary === 'interior') return undefined;
+      const hidden =
+        fold.newLineRange != null
+          ? `new lines ${fold.newLineRange[0]}-${fold.newLineRange[1]}`
+          : 'deleted lines only';
+      const summary = `Last onWindowExpand call: ${fold.boundary} fold (hid ${hidden}), lineCount=${lineCount}.`;
+      const widened = widenWindowForBoundary(
+        current,
+        fold.boundary,
+        lineCount,
+        fileDiff.additionLines.length
+      );
+      const [addedStart, addedEnd] =
+        fold.boundary === 'above'
+          ? [widened.start, current.start - 1]
+          : [current.end + 1, widened.end];
+      expandNote.textContent =
+        addedEnd >= addedStart
+          ? `${summary} Window widened to ${widened.start}-${widened.end}, adding new lines ${addedStart}-${addedEnd}.`
+          : `${summary} The window already reaches that end of the file.`;
+      widen(widened);
+      return true;
+    },
+  });
+  expandContainer.insertAdjacentElement('afterend', expandNote);
+
+  // 4. The same window with a 3-line budget: the run between the two changes
+  // keeps only 3 lines at each end.
+  buildWindowedFileDiff(wrapper, fileDiff, {
+    heading: `Windowed FileDiff — windowContextLines: 3 (split, lines ${diffRange})`,
+    diffStyle: 'split',
+    window: diffWindow,
+    windowContextLines: 3,
+  });
+
+  // 5. A change cut at the window edge. Old lines 296-297 were replaced by
+  // new lines 370-371; the window starts at 371. Split shows the one row
+  // old 297 | new 371; unified lists removed lines first, so it shows -297, a
+  // one-line fold hiding +370, then +371.
+  const cutWindow: DiffWindow = { start: 371, end: 385 };
+  for (const diffStyle of ['split', 'unified'] as const) {
+    buildWindowedFileDiff(wrapper, fileDiff, {
+      heading: `Windowed FileDiff — a change cut at the window edge (${diffStyle}, lines ${cutWindow.start}-${cutWindow.end})`,
+      note: 'Old 296-297 became new 370-371; only new 371 is in the window, so only it and the line it replaced (old 297) show.',
+      diffStyle,
+      window: cutWindow,
+      windowContextLines: 3,
+    });
+  }
+
+  // 7-9 use the React wrappers (windowedReact.tsx); the page toggles reach
+  // them through update().
+  reactSections.push(
+    mountWindowedReactSections(wrapper, {
+      fileDiff,
+      file: newFile,
+      diffWindow,
+      theme: DEMO_THEME,
+      themeType: getThemeType(),
+      overflow: getWrapped() ? 'wrap' : 'scroll',
+    })
+  );
+}
+
+const renderWindowedButton = document.getElementById('render-windowed');
+renderWindowedButton?.addEventListener('click', renderWindowedDemo);
 
 function createToggle(
   labelText: string,

@@ -1,15 +1,20 @@
 import type { CodeViewOptions } from '../components/CodeView';
-import type { FileDiffOptions } from '../components/FileDiff';
+import type { FileWindowOptions } from '../components/File';
+import type {
+  FileDiffOptions,
+  FileDiffWindowOptions,
+} from '../components/FileDiff';
 import { DEFAULT_THEMES } from '../constants';
 import type { FileOptions } from '../react';
 import type { ParseDiffOptions } from '../types';
 import { areObjectsEqual } from './areObjectsEqual';
 import { areThemesEqual } from './areThemesEqual';
+import type { DiffWindow } from './windowingCore';
 
 type AnyOptions<L, C> =
   | CodeViewOptions<L, C>
-  | FileOptions<L, C>
-  | FileDiffOptions<L, C>
+  | (FileOptions<L, C> & FileWindowOptions)
+  | (FileDiffOptions<L, C> & FileDiffWindowOptions)
   | undefined;
 
 export function areOptionsEqual<LAnnotation, Caret>(
@@ -25,9 +30,20 @@ export function areOptionsEqual<LAnnotation, Caret>(
     areObjectsEqual(optionsA, optionsB, [
       'theme',
       'parseDiffOptions' as keyof typeof optionsA,
+      'window' as keyof typeof optionsA,
     ]) &&
-    areObjectsEqual(diffOptsA, diffOptsB)
+    areObjectsEqual(diffOptsA, diffOptsB) &&
+    // A windowed snippet's range is often passed as a fresh object literal;
+    // compare it by value, like the theme and parse options.
+    areObjectsEqual(getWindow(optionsA), getWindow(optionsB))
   );
+}
+
+function getWindow<L, C>(options: AnyOptions<L, C>): DiffWindow | undefined {
+  if (options != null && 'window' in options) {
+    return options.window;
+  }
+  return undefined;
 }
 
 function getParseDiffOptions<L, C>(

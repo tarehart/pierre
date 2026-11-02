@@ -4,11 +4,13 @@ import type {
   FileOptions as FileClassOptions,
   FileEditChangeHandler,
   FileEditCompleteHandler,
+  FileWindowOptions,
 } from '../components/File';
 import type {
   FileDiffOptions as FileDiffClassOptions,
   FileDiffEditChangeHandler,
   FileDiffEditCompleteHandler,
+  FileDiffWindowOptions,
 } from '../components/FileDiff';
 import type { EditorOptions } from '../edit';
 import type { GetHoveredLineResult } from '../managers/InteractionManager';
@@ -32,6 +34,29 @@ export type FileOptions<LAnnotation, Caret> = Omit<
   FileClassOptions<LAnnotation, Caret>,
   ReactOwnedEditCallbacks
 >;
+
+/**
+ * Options of the components that can render a windowed snippet (`FileDiff`,
+ * `MultiFileDiff`; `UnresolvedFile` rejects a window): the diff options plus
+ * the window options (`window`, `windowContextLines`, `onWindowExpand`,
+ * `renderWindowSeparator`), as on the vanilla `FileDiff`. Inside a
+ * `Virtualizer`, a component with a `window` renders as a plain (not
+ * virtualized) instance. A windowed snippet is read-only, so `edit` with a
+ * `window` throws. Windowed output is rendered on the client: SSR preloaders
+ * cannot window, so prerendered HTML is replaced on hydration.
+ */
+export type WindowedFileDiffOptions<LAnnotation, Caret> = FileDiffOptions<
+  LAnnotation,
+  Caret
+> &
+  FileDiffWindowOptions;
+
+/** `File` options plus its window options; see `WindowedFileDiffOptions`. */
+export type WindowedFileOptions<LAnnotation, Caret> = FileOptions<
+  LAnnotation,
+  Caret
+> &
+  FileWindowOptions;
 
 export interface DiffBasePropsReact<LAnnotation, Caret> {
   options?: FileDiffOptions<LAnnotation, Caret>;
@@ -80,7 +105,7 @@ export interface DiffBasePropsReact<LAnnotation, Caret> {
 
 export interface FileProps<LAnnotation, Caret> {
   file: FileContents;
-  options?: FileOptions<LAnnotation, Caret>;
+  options?: WindowedFileOptions<LAnnotation, Caret>;
   /** Whether this surface has an active edit session. */
   edit?: boolean;
   /** Creation-time options passed to the nearest EditProvider factory. */

@@ -7,7 +7,7 @@ import type {
 } from '../components/FileDiff';
 import { DIFFS_TAG_NAME } from '../constants';
 import type { FileDiffMetadata } from '../types';
-import type { DiffBasePropsReact } from './types';
+import type { DiffBasePropsReact, WindowedFileDiffOptions } from './types';
 import { renderDiffChildren } from './utils/renderDiffChildren';
 import { templateRender } from './utils/templateRender';
 import { useFileDiffInstance } from './utils/useFileDiffInstance';
@@ -24,6 +24,7 @@ export interface FileDiffProps<LAnnotation, Caret> extends DiffBasePropsReact<
   Caret
 > {
   fileDiff: FileDiffMetadata;
+  options?: WindowedFileDiffOptions<LAnnotation, Caret>;
   disableWorkerPool?: boolean;
 }
 
@@ -50,6 +51,7 @@ export function FileDiff<LAnnotation = undefined, Caret = undefined>({
   onEditComplete,
 }: FileDiffProps<LAnnotation, Caret>): React.JSX.Element {
   const {
+    instanceKey,
     ref,
     getHoveredLine,
     getAnnotationSlotName,
@@ -84,7 +86,12 @@ export function FileDiff<LAnnotation = undefined, Caret = undefined>({
     getAnnotationSlotName,
   });
   return (
-    <DIFFS_TAG_NAME ref={ref} className={className} style={style}>
+    <DIFFS_TAG_NAME
+      key={instanceKey}
+      ref={ref}
+      className={className}
+      style={style}
+    >
       {templateRender(children, prerenderedHTML)}
     </DIFFS_TAG_NAME>
   );

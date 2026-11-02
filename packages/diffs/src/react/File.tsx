@@ -41,6 +41,7 @@ export function File<LAnnotation = undefined, Caret = undefined>({
   onEditComplete,
 }: FileProps<LAnnotation, Caret>): React.JSX.Element {
   const {
+    instanceKey,
     ref,
     getHoveredLine,
     getAnnotationSlotName,
@@ -75,7 +76,12 @@ export function File<LAnnotation = undefined, Caret = undefined>({
     getAnnotationSlotName,
   });
   return (
-    <DIFFS_TAG_NAME ref={ref} className={className} style={style}>
+    <DIFFS_TAG_NAME
+      key={instanceKey}
+      ref={ref}
+      className={className}
+      style={style}
+    >
       {templateRender(children, prerenderedHTML)}
     </DIFFS_TAG_NAME>
   );

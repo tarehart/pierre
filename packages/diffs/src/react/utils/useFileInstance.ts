@@ -14,6 +14,7 @@ import {
   type FileEditCompleteHandler,
   type FileOptions,
   type FileRenderInput,
+  type FileWindowOptions,
 } from '../../components/File';
 import { VirtualizedFile } from '../../components/VirtualizedFile';
 import { EMPTY_LINE_ANNOTATIONS } from '../../constants';
@@ -32,6 +33,7 @@ import { noopRender } from '../constants';
 import { useCreateEditor } from '../EditContext';
 import { useVirtualizer } from '../Virtualizer';
 import { WorkerPoolContext } from '../WorkerPoolContext';
+import { getInstanceKey } from './getInstanceKey';
 import { useForceUpdate } from './useForceUpdate';
 import { useNextRenderData } from './useNextRenderData';
 import { useStableCallback } from './useStableCallback';
@@ -52,7 +54,7 @@ interface AcceptedCompletion<LAnnotation> {
 
 interface UseFileInstanceProps<LAnnotation, Caret> {
   file: FileContents;
-  options: FileOptions<LAnnotation, Caret> | undefined;
+  options: (FileOptions<LAnnotation, Caret> & FileWindowOptions) | undefined;
   editorOptions: EditorOptions<'file', LAnnotation, Caret> | undefined;
   editStateKey: string | undefined;
   lineAnnotations: LineAnnotation<LAnnotation>[] | undefined;
@@ -68,6 +70,8 @@ interface UseFileInstanceProps<LAnnotation, Caret> {
 }
 
 interface UseFileInstanceReturn<LAnnotation> {
+  /** See `UseFileDiffInstanceReturn.instanceKey`. */
+  instanceKey: string;
   file: FileContents;
   lineAnnotations: LineAnnotation<LAnnotation>[];
   ref(node: HTMLElement | null): void;
@@ -148,7 +152,7 @@ export function useFileInstance<LAnnotation, Caret>({
           'File: An instance should not already exist when a node is created'
         );
       }
-      if (simpleVirtualizer != null) {
+      if (simpleVirtualizer != null && options?.window == null) {
         instanceRef.current = new VirtualizedFile(
           mergeFileOptions({
             controlledSelection,
@@ -208,13 +212,14 @@ export function useFileInstance<LAnnotation, Caret>({
       options,
     });
     const forceRender = !areOptionsEqual(instance.options, newOptions);
-    instance.setOptions(newOptions);
-    // Detach the editor before rendering when editing turns off
+    // Detach the editor before applying options when editing turns off, so
+    // options that need no editor (such as a window) never meet one.
     if (!edit && disposeEditorRef.current != null) {
       const { current: disposeEditor } = disposeEditorRef;
       disposeEditorRef.current = null;
       disposeEditor();
     }
+    instance.setOptions(newOptions);
     const resolved = resolveAcceptedValues(
       file,
       lineAnnotations,
@@ -248,7 +253,13 @@ export function useFileInstance<LAnnotation, Caret>({
       getLineAnnotationName(annotation),
     []
   );
-  return { ...renderData, ref, getHoveredLine, getAnnotationSlotName };
+  return {
+    ...renderData,
+    instanceKey: getInstanceKey(simpleVirtualizer != null, options?.window),
+    ref,
+    getHoveredLine,
+    getAnnotationSlotName,
+  };
 }
 
 // Read the accepted values on every render. Entries are only removed in the
@@ -311,7 +322,7 @@ function resolveAcceptedValues<LAnnotation>(
 }
 
 interface MergeFileOptionsProps<LAnnotation, Caret> {
-  options: FileOptions<LAnnotation, Caret> | undefined;
+  options: (FileOptions<LAnnotation, Caret> & FileWindowOptions) | undefined;
   controlledSelection: boolean;
   hasGutterRenderUtility: boolean;
   hasCustomHeader: boolean;
@@ -326,7 +337,8 @@ function mergeFileOptions<LAnnotation, Caret>({
   hasGutterRenderUtility,
   onEditChange,
   onEditComplete,
-}: MergeFileOptionsProps<LAnnotation, Caret>): FileOptions<LAnnotation, Caret> {
+}: MergeFileOptionsProps<LAnnotation, Caret>): FileOptions<LAnnotation, Caret> &
+  FileWindowOptions {
   return {
     ...options,
     controlledSelection,

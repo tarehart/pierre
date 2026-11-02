@@ -16,6 +16,7 @@ import {
   type FileDiffEditCompleteHandler,
   type FileDiffOptions,
   type FileDiffRenderInput,
+  type FileDiffWindowOptions,
 } from '../../components/FileDiff';
 import { VirtualizedFileDiff } from '../../components/VirtualizedFileDiff';
 import { EMPTY_LINE_ANNOTATIONS } from '../../constants';
@@ -37,6 +38,7 @@ import { noopRender } from '../constants';
 import { useCreateEditor } from '../EditContext';
 import { useVirtualizer } from '../Virtualizer';
 import { WorkerPoolContext } from '../WorkerPoolContext';
+import { getInstanceKey } from './getInstanceKey';
 import { useForceUpdate } from './useForceUpdate';
 import { useNextRenderData } from './useNextRenderData';
 import { useStableCallback } from './useStableCallback';
@@ -69,7 +71,9 @@ interface UseFileDiffInstanceProps<LAnnotation, Caret> {
   fileDiff?: FileDiffMetadata;
   oldFile?: FileContents | null;
   newFile?: FileContents | null;
-  options: FileDiffOptions<LAnnotation, Caret> | undefined;
+  options:
+    | (FileDiffOptions<LAnnotation, Caret> & FileDiffWindowOptions)
+    | undefined;
   editorOptions: EditorOptions<'file-diff', LAnnotation, Caret> | undefined;
   editStateKey: string | undefined;
   lineAnnotations: DiffLineAnnotation<LAnnotation>[] | undefined;
@@ -85,6 +89,12 @@ interface UseFileDiffInstanceProps<LAnnotation, Caret> {
 }
 
 interface UseFileDiffInstanceReturn<LAnnotation> {
+  /**
+   * Key for the container element. It changes when the instance must be
+   * re-created: inside a Virtualizer, a windowed diff is a plain FileDiff
+   * (a virtualized one cannot fold), so toggling `window` remounts it.
+   */
+  instanceKey: string;
   lineAnnotations: DiffLineAnnotation<LAnnotation>[];
   fileDiff: FileDiffMetadata;
   ref(node: HTMLElement | null): void;
@@ -193,7 +203,7 @@ export function useFileDiffInstance<LAnnotation, Caret>({
           'useFileDiffInstance: An instance should not already exist when a node is created'
         );
       }
-      if (simpleVirtualizer != null) {
+      if (simpleVirtualizer != null && options?.window == null) {
         instanceRef.current = new VirtualizedFileDiff(
           mergeFileDiffOptions({
             controlledSelection,
@@ -253,8 +263,8 @@ export function useFileDiffInstance<LAnnotation, Caret>({
       options,
     });
     const forceRender = !areOptionsEqual(instance.options, newOptions);
-    instance.setOptions(newOptions);
-    // Detach editor before rendering if required
+    // Detach the editor before applying options, so options that need no
+    // editor (such as a window) never meet a still-attached one.
     if (!edit) {
       pendingAttachRef.current = null;
       if (disposeEditorRef.current != null) {
@@ -263,6 +273,7 @@ export function useFileDiffInstance<LAnnotation, Caret>({
         disposeEditor();
       }
     }
+    instance.setOptions(newOptions);
     const resolved = resolveAcceptedValues(
       effectiveFileDiff,
       lineAnnotations,
@@ -351,6 +362,7 @@ export function useFileDiffInstance<LAnnotation, Caret>({
 
   return {
     ...renderData,
+    instanceKey: getInstanceKey(simpleVirtualizer != null, options?.window),
     ref,
     getHoveredLine,
     getAnnotationSlotName,
@@ -488,7 +500,9 @@ interface MergeFileDiffOptionsProps<LAnnotation, Caret> {
   hasGutterRenderUtility: boolean;
   onEditChange?: FileDiffEditChangeHandler<LAnnotation, Caret>;
   onEditComplete?: FileDiffEditCompleteHandler<LAnnotation, Caret>;
-  options: FileDiffOptions<LAnnotation, Caret> | undefined;
+  options:
+    | (FileDiffOptions<LAnnotation, Caret> & FileDiffWindowOptions)
+    | undefined;
 }
 
 function mergeFileDiffOptions<LAnnotation, Caret>({
@@ -501,7 +515,8 @@ function mergeFileDiffOptions<LAnnotation, Caret>({
 }: MergeFileDiffOptionsProps<LAnnotation, Caret>): FileDiffOptions<
   LAnnotation,
   Caret
-> {
+> &
+  FileDiffWindowOptions {
   return {
     ...options,
     controlledSelection,

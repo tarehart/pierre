@@ -911,6 +911,63 @@
     overflow: clip;
   }
 
+  /* Split windowed render: the above and below window folds are single rows
+   * placed directly in the pre, before and after the code columns, because
+   * nothing lies beyond them. Both split grids (two scroll columns, or the
+   * shared four-column grid of wrap and dehydrated scroll) stretch them
+   * across every column. */
+  [data-diff-type='split'] > [data-window-boundary] {
+    grid-column: 1 / -1;
+  }
+
+  /* In scroll mode each column is its own box with block padding. The top
+   * gap moves above the above row (none under a header, like the columns),
+   * so the column drops its top padding. The column keeps its bottom padding,
+   * which holds the horizontal scrollbar, as the gap before the below row;
+   * the below row then carries the bottom gap itself. */
+  [data-diff-type='split'][data-overflow='scroll']:not([data-dehydrated]) {
+    > [data-window-boundary='above'] {
+      margin-top: var(--diffs-gap-block, var(--diffs-gap-fallback));
+    }
+
+    > [data-window-boundary='above'] ~ [data-code] {
+      padding-top: 0;
+    }
+
+    > [data-window-boundary='below'] {
+      margin-top: 0;
+      margin-bottom: var(--diffs-gap-block, var(--diffs-gap-fallback));
+    }
+  }
+
+  [data-diffs-header]
+    ~ [data-diff][data-diff-type='split'][data-overflow='scroll']
+    > [data-window-boundary='above'] {
+    margin-top: 0;
+  }
+
+  /* Draw the full-width row like a unified separator: inset by the inline
+   * gap, with rounded ends. */
+  [data-window-boundary] [data-separator-wrapper] {
+    padding-inline: var(--diffs-gap-inline, var(--diffs-gap-fallback));
+  }
+
+  [data-window-boundary] [data-separator-content] {
+    border-radius: 6px;
+  }
+
+  /* A custom separator is a subgrid of its column; the full-width row has no
+   * column of its own, so give the host element the whole row instead of the
+   * first grid track. */
+  [data-window-boundary][data-separator='custom'] {
+    display: block;
+  }
+
+  [data-window-boundary][data-expand-index] [data-separator-content] {
+    border-top-left-radius: unset;
+    border-bottom-left-radius: unset;
+  }
+
   [data-overflow='scroll'] [data-gutter] {
     position: sticky;
     left: 0;

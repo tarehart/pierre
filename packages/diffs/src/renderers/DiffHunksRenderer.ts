@@ -29,6 +29,7 @@ import type {
   FileDiffMetadata,
   FileHeaderRenderMode,
   HighlightedToken,
+  Hunk,
   HunkData,
   HunkExpansionRegion,
   HunkSeparators,
@@ -78,8 +79,17 @@ import {
 } from '../utils/includesFileAnnotations';
 import { isDefaultRenderRange } from '../utils/isDefaultRenderRange';
 import { isDiffPlainText } from '../utils/isDiffPlainText';
-import type { DiffLineMetadata } from '../utils/iterateOverDiff';
+import type {
+  DiffLineMetadata,
+  IterateOverDiffProps,
+} from '../utils/iterateOverDiff';
 import { iterateOverDiff } from '../utils/iterateOverDiff';
+import {
+  iterateWindowedDiff,
+  type WindowedDiffLineCallbackProps,
+  type WindowedLineIndexLookup,
+  type WindowSeparatorSpec,
+} from '../utils/iterateWindowedDiff';
 import { renderDiffWithHighlighter } from '../utils/renderDiffWithHighlighter';
 import { resolvePreferredHighlighter } from '../utils/resolvePreferredHighlighter';
 import {
@@ -90,6 +100,12 @@ import {
   updateDiffHunks,
 } from '../utils/updateDiffHunks';
 import { getTrailingContextRangeSize } from '../utils/virtualDiffLayout';
+import {
+  type DiffWindow,
+  growWindowReveal,
+  type WindowFold,
+  type WindowReveal,
+} from '../utils/windowingCore';
 import type { WorkerPoolManager } from '../worker';
 import { isHandledWorkerPoolError } from '../worker/errors';
 
@@ -150,7 +166,53 @@ interface ProcessContext {
 }
 
 export interface DiffHunksRendererOptions extends BaseDiffOptions {
+  /**
+   * See `FileDiffOptions.windowContextLines`.
+   * @internal Windowing plumbing for FileDiff; not public API.
+   */
+  windowContextLines?: number;
   headerRenderMode?: FileHeaderRenderMode;
+}
+
+/**
+ * Windowing state for the renderer: the requested display window plus the
+ * reader's accumulated reveals. Present only when the diff is being rendered as
+ * a windowed snippet (the `window` component option).
+ * @internal Windowing plumbing for FileDiff; not public API.
+ */
+export interface DiffWindowRenderState {
+  window: DiffWindow;
+  reveal: WindowReveal;
+  /**
+   * When true, the above/below window fold separators render as empty
+   * `custom` slots for the host's `renderWindowSeparator` hook to fill,
+   * instead of the built-in `line-info` separator. Interior folds always use
+   * the built-in separator.
+   */
+  hasSeparatorRenderer?: boolean;
+}
+
+// Shallow equality for setWindowState's change check. `reveal` is a stable
+// Map instance the host mutates in place across renders (see
+// FileDiff.syncWindowState) rather than reassigning, so
+// reference equality on it correctly detects "same window, same accumulated
+// reveals" without walking its entries.
+function areWindowStatesEqual(
+  a: DiffWindowRenderState | undefined,
+  b: DiffWindowRenderState | undefined
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a == null || b == null) {
+    return false;
+  }
+  return (
+    a.window.start === b.window.start &&
+    a.window.end === b.window.end &&
+    a.reveal === b.reveal &&
+    (a.hasSeparatorRenderer ?? false) === (b.hasSeparatorRenderer ?? false)
+  );
 }
 
 export interface DiffHunksRendererOptionsWithDefaults extends Omit<
@@ -234,6 +296,21 @@ export interface HunksRenderResult {
   rowCount: number;
   bufferBefore: number;
   bufferAfter: number;
+  /**
+   * Split windowed render only: the above and below window folds, each as one
+   * row spanning both columns. Nothing lies beyond them, so they sit outside
+   * the per-side code columns (above before them, below after them) instead
+   * of being drawn once per column. Interior folds stay in the columns.
+   * Undefined for every other render.
+   * @internal Windowing plumbing for FileDiff; not public API.
+   */
+  windowBoundaryRows?: WindowBoundaryRows;
+}
+
+/** @internal Windowing plumbing for FileDiff; not public API. */
+export interface WindowBoundaryRows {
+  above?: HASTElement;
+  below?: HASTElement;
 }
 
 let instanceId = -1;
@@ -247,6 +324,17 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
   private diff: FileDiffMetadata | undefined;
 
   private expandedHunks = new Map<number, HunkExpansionRegion>();
+
+  // Windowed-snippet state. When set, `processDiffResult` renders only the
+  // window's rows and folds everything else into expandable boundary/interior
+  // separators, instead of the whole-file walk. Null for normal diffs.
+  private windowState: DiffWindowRenderState | undefined;
+  // The latest windowed render's folds, indexed by `data-expand-index`, so an
+  // expansion click (which arrives as an index) routes to the right fold.
+  private windowFoldSpecs: WindowSeparatorSpec[] = [];
+  // Resolves a rendered (lineNumber, side) to the densified line-index pair
+  // actually written into this render's DOM. Undefined outside windowed mode.
+  private windowLineIndexLookup: WindowedLineIndexLookup | undefined;
 
   private deletionAnnotations: AnnotationLineMap<LAnnotation> = {};
   private additionAnnotations: AnnotationLineMap<LAnnotation> = {};
@@ -546,6 +634,115 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     expandedHunks: Map<number, HunkExpansionRegion>
   ): void {
     this.expandedHunks = expandedHunks;
+  }
+
+  /**
+   * Put the renderer into windowed mode (or update the window). Clears the
+   * render cache so the next render rebuilds against the new window. Pass
+   * `undefined` to leave windowed mode and render the whole diff again.
+   * @internal Windowing plumbing for FileDiff; not public API.
+   */
+  public setWindowState(windowState: DiffWindowRenderState | undefined): void {
+    // FileDiff.syncWindowState calls this on every render, usually with an
+    // unchanged window. Only clear the render cache when the windowed state
+    // actually changed.
+    if (areWindowStatesEqual(this.windowState, windowState)) {
+      this.windowState = windowState;
+      return;
+    }
+    this.windowState = windowState;
+    // The previous render's folds no longer describe what the next render
+    // shows, so lookups must not answer from them.
+    this.windowFoldSpecs = [];
+    this.windowLineIndexLookup = undefined;
+    this.clearRenderCache();
+  }
+
+  /**
+   * Resolves a rendered (new-file lineNumber, side) to the densified
+   * `[unifiedLineIndex, splitLineIndex]` pair actually written into the most
+   * recent windowed render's DOM. Undefined outside windowed mode and until
+   * the first render with the current window.
+   * @internal Windowing plumbing for FileDiff; not public API.
+   */
+  public getWindowLineIndexLookup(): WindowedLineIndexLookup | undefined {
+    return this.windowLineIndexLookup;
+  }
+
+  /**
+   * The public `WindowFold` for a rendered separator's `expandIndex` (its
+   * `data-expand-index`), or undefined when the index is not a windowed fold in
+   * the current render. Lets host hooks (`renderWindowSeparator`, expansion
+   * click routing) resolve a DOM separator to its fold without recomputing.
+   * @internal Windowing plumbing for FileDiff; not public API.
+   */
+  public getWindowFoldByExpandIndex(
+    expandIndex: number
+  ): WindowFold | undefined {
+    const fold = this.windowFoldSpecs[expandIndex]?.fold;
+    // A copy, so a host that mutates the fold it is handed cannot change the
+    // render's own record (FileDiff compares folds to reuse host elements).
+    return fold != null ? structuredClone(fold) : undefined;
+  }
+
+  /**
+   * Reveal lines out of the windowed fold rendered with `expandIndex` (its
+   * `data-expand-index`), mirroring `expandHunk` for the whole-file path; the
+   * caller's next render shows them. Returns true when the index mapped to a
+   * windowed fold, so the host can tell a windowed expansion from a
+   * whole-file one. The index map is rebuilt every render, so callers pass
+   * the index from the current DOM.
+   * @internal Windowing plumbing for FileDiff; not public API.
+   */
+  public expandWindowByIndex(
+    expandIndex: number,
+    direction: ExpansionDirections,
+    lineCount: number = this.getOptionsWithDefaults().expansionLineCount
+  ): boolean {
+    return this.growWindowFold(
+      this.windowFoldSpecs[expandIndex]?.fold,
+      direction,
+      lineCount
+    );
+  }
+
+  /**
+   * Reveal lines out of the windowed fold with the stable id `foldId`
+   * (`WindowFold.foldId`: `window:above`, `window:below`, `interior:<n>` or
+   * `window:edge:<n>`), as an expander click on it would; the caller's next
+   * render shows them. Returns false, changing nothing, when the latest
+   * render has no such fold (an unknown id, a fold already fully open, or no
+   * window) or `lineCount` is not positive.
+   */
+  public expandWindowSeparator(
+    foldId: string,
+    direction: ExpansionDirections,
+    lineCount: number = this.getOptionsWithDefaults().expansionLineCount
+  ): boolean {
+    return this.growWindowFold(
+      this.windowFoldSpecs.find((spec) => spec.fold.foldId === foldId)?.fold,
+      direction,
+      lineCount
+    );
+  }
+
+  private growWindowFold(
+    fold: WindowFold | undefined,
+    direction: ExpansionDirections,
+    lineCount: number
+  ): boolean {
+    // A count that opens nothing (0, negative, NaN) is refused, so it can
+    // never shrink a reveal the reader made.
+    if (fold == null || this.windowState == null || !(lineCount > 0)) {
+      return false;
+    }
+    growWindowReveal(this.windowState.reveal, fold, direction, lineCount);
+    // As in expandHunk: a highlighted result already covers every line of
+    // the non-partial diff, so only an unhighlighted cache must be rebuilt.
+    if (this.renderCache?.highlighted !== true) {
+      this.clearRenderCache();
+    }
+    return true;
   }
 
   public setLineAnnotations(
@@ -1529,6 +1726,34 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     return this.options.tokenizeMaxLength ?? DEFAULT_TOKENIZE_MAX_LENGTH;
   }
 
+  // Wrap iterateWindowedDiff in iterateOverDiff's signature so
+  // processDiffResult can drive the same row callback from either walk.
+  // `onRow` sees each windowed row (with its fold markers) before the
+  // callback does. Also records the model and index maps from this render.
+  private createWindowedIterator(
+    windowState: DiffWindowRenderState,
+    onRow: (row: WindowedDiffLineCallbackProps) => void
+  ): (props: IterateOverDiffProps) => void {
+    return ({ diff, diffStyle, callback }) => {
+      iterateWindowedDiff({
+        diff,
+        window: windowState.window,
+        // processDiffResult only ever walks a single style.
+        diffStyle: diffStyle === 'split' ? 'split' : 'unified',
+        contextLines: this.options.windowContextLines,
+        reveal: windowState.reveal,
+        callback: (row) => {
+          onRow(row);
+          return callback(row);
+        },
+        onModel: (specs, lineIndexLookup) => {
+          this.windowFoldSpecs = specs;
+          this.windowLineIndexLookup = lineIndexLookup;
+        },
+      });
+    };
+  }
+
   private processDiffResult(
     fileDiff: FileDiffMetadata,
     renderRange: RenderRange,
@@ -1542,14 +1767,20 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       collapsedContextThreshold,
       hunkSeparators,
     } = this.getOptionsWithDefaults();
-    const isRenderCacheDirty = this.renderCache?.isDirty ?? false;
+    const windowState = this.windowState;
+    // Windowed rows get densified line indexes, so like an edit session they
+    // must override the `data-line-index` baked into the highlighted HAST.
+    const isRenderCacheDirty =
+      (this.renderCache?.isDirty ?? false) || windowState != null;
 
     const unified = diffStyle === 'unified';
     const canHydrateContext = canHydrateCollapsedContext(
       fileDiff,
       this.options.loadDiffFiles != null
     );
-    const isExpandableDiff = !fileDiff.isPartial || canHydrateContext;
+    // A windowed diff is always non-partial, so its folds always expand.
+    const isExpandableDiff =
+      windowState != null || !fileDiff.isPartial || canHydrateContext;
 
     let additionsContentAST: ElementContent[] | undefined = [];
     let deletionsContentAST: ElementContent[] | undefined = [];
@@ -1588,10 +1819,14 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         }
       },
     };
-    const trailingRangeSize = getTrailingContextRangeSize({
-      fileDiff,
-      errorPrefix: 'DiffHunksRenderer.processDiffResult',
-    });
+    // In windowed mode the below-window fold owns the trailing collapse.
+    const trailingRangeSize =
+      windowState != null
+        ? 0
+        : getTrailingContextRangeSize({
+            fileDiff,
+            errorPrefix: 'DiffHunksRenderer.processDiffResult',
+          });
     const pendingSplitContext: PendingSplitContext = {
       size: 0,
       side: undefined,
@@ -1648,9 +1883,55 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       }
     }
 
-    this.pushFileLevelAnnotations(fileDiff, diffStyle, renderRange, context);
+    // Windowed render only: each kept row arrives with the folds that sit
+    // before/after it (see iterateWindowedDiff). The row callback reads them
+    // from `windowRow` and pushes them in place of the whole-file separators.
+    let windowRow: WindowedDiffLineCallbackProps | undefined;
+    const windowHasSeparatorRenderer =
+      windowState?.hasSeparatorRenderer === true;
+    // A split boundary fold becomes one full-width row only when both columns
+    // render (a new or deleted file has one, laid out like unified) and, for
+    // the above fold, when no file-level annotation row sits above it in the
+    // columns: the annotation must stay first, as in unified.
+    const windowBoundaryRows: WindowBoundaryRows = {};
+    const splitHasBothColumns =
+      diffStyle === 'split' &&
+      fileDiff.type !== 'new' &&
+      fileDiff.type !== 'deleted';
+    let hasFileAnnotationRows = false;
+    function pushWindowSeparator(spec: WindowSeparatorSpec) {
+      pendingSplitContext.flush();
+      // The host's renderWindowSeparator owns only the above/below folds;
+      // interior folds always use the built-in separator.
+      const custom =
+        windowHasSeparatorRenderer && spec.fold.boundary !== 'interior';
+      if (
+        splitHasBothColumns &&
+        (spec.fold.boundary === 'below' ||
+          (spec.fold.boundary === 'above' && !hasFileAnnotationRows))
+      ) {
+        const row = createWindowBoundaryRow(spec, custom, context);
+        if (row != null) {
+          windowBoundaryRows[spec.fold.boundary] = row;
+        }
+      } else if (diffStyle === 'unified') {
+        pushWindowFoldSeparator('unified', spec, custom, context);
+      } else {
+        pushWindowFoldSeparator('deletions', spec, custom, context);
+        pushWindowFoldSeparator('additions', spec, custom, context);
+      }
+    }
+    const iterateRows =
+      windowState != null
+        ? this.createWindowedIterator(windowState, (row) => {
+            windowRow = row;
+          })
+        : iterateOverDiff;
 
-    iterateOverDiff({
+    this.pushFileLevelAnnotations(fileDiff, diffStyle, renderRange, context);
+    hasFileAnnotationRows = context.rowCount > 0;
+
+    iterateRows({
       diff: fileDiff,
       diffStyle,
       startingLine: renderRange.startingLine,
@@ -1679,7 +1960,11 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
           pendingSplitContext.flush();
         }
 
-        if (collapsedBefore > 0) {
+        if (windowRow?.__windowSeparatorsBefore != null) {
+          for (const spec of windowRow.__windowSeparatorsBefore) {
+            pushWindowSeparator(spec);
+          }
+        } else if (collapsedBefore > 0) {
           pushSeparators({
             hunkIndex,
             collapsedLines: collapsedBefore,
@@ -1943,10 +2228,18 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
         const splitNoEOFCRAddition = isFinalSplitHunkRow
           ? hunk.noEOFCRAdditions
           : false;
+        // Windowed rows carry densified split/unified indexes, so the checks
+        // above cannot find a hunk's last row there.
+        const windowedNoEOFCR =
+          windowState != null && hunk != null
+            ? getWindowedNoEOFCR(hunk, deletionLine, additionLine)
+            : undefined;
         const noEOFCRDeletion =
-          (deletionLine?.noEOFCR ?? false) || splitNoEOFCRDeletion;
+          (deletionLine?.noEOFCR ?? false) ||
+          (windowedNoEOFCR?.deletion ?? splitNoEOFCRDeletion);
         const noEOFCRAddition =
-          (additionLine?.noEOFCR ?? false) || splitNoEOFCRAddition;
+          (additionLine?.noEOFCR ?? false) ||
+          (windowedNoEOFCR?.addition ?? splitNoEOFCRAddition);
         if (noEOFCRAddition || noEOFCRDeletion) {
           if (diffStyle === 'split') {
             pendingSplitContext.flush();
@@ -2013,7 +2306,11 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
           context.incrementRowCount(1);
         }
 
-        if (
+        if (windowRow?.__windowSeparatorsAfter != null) {
+          for (const spec of windowRow.__windowSeparatorsAfter) {
+            pushWindowSeparator(spec);
+          }
+        } else if (
           hunkSeparators !== 'simple' &&
           hunkSeparators !== 'metadata' &&
           (collapsedAfter > 0 || (isFinalHunkRow && canHydrateContext))
@@ -2033,6 +2330,16 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       },
     });
 
+    // A window with no visible row never reaches the row callback, so push
+    // its folds directly; otherwise the reader would have no way back. Test
+    // for an emitted row rather than the row count, which a file-level
+    // annotation row already makes nonzero.
+    if (windowState != null && windowRow == null) {
+      for (const spec of this.windowFoldSpecs) {
+        pushWindowSeparator(spec);
+      }
+    }
+
     if (diffStyle === 'split') {
       pendingSplitContext.flush();
     }
@@ -2048,7 +2355,11 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     // Determine which ASTs to include based on diff style and file type
     const shouldIncludeAdditions = !unified && fileDiff.type !== 'deleted';
     const shouldIncludeDeletions = !unified && fileDiff.type !== 'new';
-    const hasContent = context.rowCount > 0 || hasBuffer;
+    const hasBoundaryRows =
+      windowBoundaryRows.above != null || windowBoundaryRows.below != null;
+    // A boundary row is content too: an empty window's recovery fold may be
+    // the only thing to render.
+    const hasContent = context.rowCount > 0 || hasBuffer || hasBoundaryRows;
 
     additionsContentAST =
       shouldIncludeAdditions && hasContent ? additionsContentAST : undefined;
@@ -2087,6 +2398,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       rowCount: context.rowCount,
       bufferBefore: renderRange.bufferBefore,
       bufferAfter: renderRange.bufferAfter,
+      windowBoundaryRows: hasBoundaryRows ? windowBoundaryRows : undefined,
       // FIXME
       css: '',
     };
@@ -2142,6 +2454,10 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       return { ...result.preNode, children };
     }
 
+    const { windowBoundaryRows } = result;
+    if (windowBoundaryRows?.above != null) {
+      children.push(windowBoundaryRows.above);
+    }
     const deletionsAST = this.renderCodeAST('deletions', result);
     if (deletionsAST != null) {
       children.push(
@@ -2169,6 +2485,9 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
           },
         })
       );
+    }
+    if (windowBoundaryRows?.below != null) {
+      children.push(windowBoundaryRows.below);
     }
     return { ...result.preNode, children };
   }
@@ -2357,6 +2676,20 @@ const EN_PLURAL_RULES = new Intl.PluralRules('en-US');
 function getModifiedLinesString(lines: number) {
   const suffix = EN_PLURAL_RULES.select(lines) === 'one' ? '' : 's';
   return `${lines} unmodified line${suffix}`;
+}
+
+// Label for a windowed fold. Only folds outside the window can hide changed
+// lines (in-window change rows are never folded, see markBaseHidden): the
+// above/below folds and the part of a change cut at the window edge. A fold
+// that does must not call its lines unmodified; it uses the plain-file
+// engine's "hidden lines" wording plus a note.
+function getWindowFoldLabel(fold: WindowFold): string {
+  if (!fold.containsChanges) {
+    return getModifiedLinesString(fold.collapsedLines);
+  }
+  const suffix =
+    EN_PLURAL_RULES.select(fold.collapsedLines) === 'one' ? '' : 's';
+  return `${fold.collapsedLines} hidden line${suffix} (includes changes)`;
 }
 
 function pushUnifiedInjectedRows(
@@ -2587,6 +2920,140 @@ function pushSeparator(
     expandable: isExpandable
       ? { up: !isFirstHunk, down: !isLastHunk, chunked }
       : undefined,
+  });
+}
+
+// Windowed rows only: whether this row is its hunk's last deletion/addition
+// row (by content index) and so carries the hunk's no-newline marker. Each
+// side is checked on its own because windowing can land the two sides' final
+// rows on different callback invocations.
+function getWindowedNoEOFCR(
+  hunk: Hunk,
+  deletionLine: DiffLineMetadata | undefined,
+  additionLine: DiffLineMetadata | undefined
+): { deletion: boolean; addition: boolean } {
+  const isFinalDeletionRow =
+    deletionLine != null &&
+    deletionLine.lineIndex === hunk.deletionLineIndex + hunk.deletionCount - 1;
+  const isFinalAdditionRow =
+    additionLine != null &&
+    additionLine.lineIndex === hunk.additionLineIndex + hunk.additionCount - 1;
+  return {
+    deletion: isFinalDeletionRow && hunk.noEOFCRDeletions,
+    addition: isFinalAdditionRow && hunk.noEOFCRAdditions,
+  };
+}
+
+// Push one windowed fold's separator for one column. A fold always renders an
+// expandable affordance -- it is the reader's only way back to the lines it
+// hides -- so `simple`, `metadata` and the deprecated `hunkSeparators`
+// function (whose HunkData describes real diff hunks, not folds) fall back to
+// a `line-info` separator here.
+// With a `renderWindowSeparator` hook a boundary fold is an empty custom slot
+// in the content column; the gutter gets an aligned empty cell, since a
+// slotted host element is assigned to only one slot. The slot is wrapped so a
+// click anywhere on it expands the fold. Interior folds always use the
+// built-in separator. `spec.expandIndex` stands in for the hunk index.
+function pushWindowFoldSeparator(
+  type: 'additions' | 'deletions' | 'unified',
+  spec: WindowSeparatorSpec,
+  hasSeparatorRenderer: boolean,
+  context: ProcessContext
+) {
+  if (spec.fold.collapsedLines <= 0) {
+    return;
+  }
+  const props = getWindowFoldSeparatorProps(
+    type,
+    spec,
+    hasSeparatorRenderer,
+    context
+  );
+  const { isFirstHunk, isLastHunk } = props;
+  context.pushToGutter(
+    type,
+    createSeparator(
+      hasSeparatorRenderer ? { type: 'custom', isFirstHunk, isLastHunk } : props
+    )
+  );
+  (type === 'unified'
+    ? context.unifiedContentAST
+    : type === 'deletions'
+      ? context.deletionsContentAST
+      : context.additionsContentAST
+  ).push(createSeparator(props));
+  if (type !== 'additions') {
+    context.incrementRowCount(1);
+  }
+  pushWindowFoldHunkData(type, spec, props, context);
+}
+
+// Build the single full-width row for a split diff's above or below window
+// fold. It is one separator element (no gutter/content pair), placed directly
+// in `pre` by the caller, so it spans both columns and a custom
+// `renderWindowSeparator` element is requested once rather than per column.
+// Its slot is named as a `unified` column slot: it belongs to neither side.
+// Returns undefined for an empty fold, like pushWindowFoldSeparator.
+function createWindowBoundaryRow(
+  spec: WindowSeparatorSpec,
+  hasSeparatorRenderer: boolean,
+  context: ProcessContext
+): HASTElement | undefined {
+  if (spec.fold.collapsedLines <= 0) {
+    return undefined;
+  }
+  const props = getWindowFoldSeparatorProps(
+    'unified',
+    spec,
+    hasSeparatorRenderer,
+    context
+  );
+  const row = createSeparator(props);
+  row.properties['data-window-boundary'] = spec.fold.boundary;
+  pushWindowFoldHunkData('unified', spec, props, context);
+  return row;
+}
+
+function getWindowFoldSeparatorProps(
+  type: 'additions' | 'deletions' | 'unified',
+  { expandIndex, fold }: WindowSeparatorSpec,
+  hasSeparatorRenderer: boolean,
+  context: ProcessContext
+) {
+  return {
+    type: hasSeparatorRenderer
+      ? ('custom' as const)
+      : context.hunkSeparators === 'line-info-basic'
+        ? ('line-info-basic' as const)
+        : ('line-info' as const),
+    content: getWindowFoldLabel(fold),
+    expandIndex,
+    chunked: fold.collapsedLines > context.expansionLineCount,
+    slotName: getHunkSeparatorSlotName(type, expandIndex),
+    isFirstHunk: fold.boundary === 'above',
+    isLastHunk: fold.boundary === 'below',
+    isWindowedFold: true,
+  };
+}
+
+function pushWindowFoldHunkData(
+  type: 'additions' | 'deletions' | 'unified',
+  { expandIndex, fold }: WindowSeparatorSpec,
+  {
+    slotName,
+    chunked,
+    isFirstHunk,
+    isLastHunk,
+  }: ReturnType<typeof getWindowFoldSeparatorProps>,
+  context: ProcessContext
+): void {
+  context.hunkData.push({
+    slotName,
+    hunkIndex: expandIndex,
+    lines: fold.collapsedLines,
+    lineCountKnown: true,
+    type,
+    expandable: { up: !isFirstHunk, down: !isLastHunk, chunked },
   });
 }
 

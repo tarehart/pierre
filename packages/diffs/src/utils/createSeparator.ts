@@ -15,6 +15,12 @@ interface CreateSeparatorProps {
   slotName?: string;
   isFirstHunk: boolean;
   isLastHunk: boolean;
+  /**
+   * Windowed folds only: wrap a `custom` slot in an expand-button region so a
+   * click anywhere on the host's slotted element expands the fold. Other
+   * custom separators keep a bare slot.
+   */
+  isWindowedFold?: boolean;
 }
 
 function createExpandButton(type: ExpansionDirections) {
@@ -44,6 +50,7 @@ export function createSeparator({
   slotName,
   isFirstHunk,
   isLastHunk,
+  isWindowedFold = false,
 }: CreateSeparatorProps): HASTElement {
   let buttonCount = 0;
   const children = [];
@@ -115,12 +122,35 @@ export function createSeparator({
     );
   }
   if (type === 'custom' && slotName != null) {
-    children.push(
-      createHastElement({
-        tagName: 'slot',
-        properties: { name: slotName },
-      })
-    );
+    const slot = createHastElement({
+      tagName: 'slot',
+      properties: { name: slotName },
+    });
+    if (isWindowedFold && expandIndex != null) {
+      // The host owns the separator's appearance via the slotted element, but
+      // Pierre still routes the click: wrap the slot in an expand-button region
+      // so a click anywhere on the host's element resolves to this fold's
+      // expand action (the outer wrapper already carries `data-expand-index`).
+      // Direction is derived from the fold's position exactly as the built-in
+      // button does — above→down, below→up, interior→both.
+      const direction: ExpansionDirections =
+        !isFirstHunk && !isLastHunk ? 'both' : isFirstHunk ? 'down' : 'up';
+      children.push(
+        createHastElement({
+          tagName: 'div',
+          children: [slot],
+          properties: {
+            role: 'button',
+            'data-expand-button': '',
+            'data-expand-up': direction === 'up' ? '' : undefined,
+            'data-expand-down': direction === 'down' ? '' : undefined,
+            'data-expand-both': direction === 'both' ? '' : undefined,
+          },
+        })
+      );
+    } else {
+      children.push(slot);
+    }
   }
   return createHastElement({
     tagName: 'div',

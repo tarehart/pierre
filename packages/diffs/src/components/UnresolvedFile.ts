@@ -18,6 +18,7 @@ import type {
 import { areDiffTargetsEqual } from '../utils/areDiffTargetsEqual';
 import { areFilesEqual } from '../utils/areFilesEqual';
 import { areMergeConflictActionsEqual } from '../utils/areMergeConflictActionsEqual';
+import { assertNotWindowed } from '../utils/assertNotWindowed';
 import { createAnnotationWrapperNode } from '../utils/createAnnotationWrapperNode';
 import { getMergeConflictActionSlotName } from '../utils/getMergeConflictActionSlotName';
 import {
@@ -179,6 +180,11 @@ export class UnresolvedFile<LAnnotation = undefined> extends FileDiff<
     if (options == null) {
       return;
     }
+    // Windowing does not fit merge conflicts: each resolve rewrites the file,
+    // so a fixed window drifts, and conflicts outside it still need resolving.
+    // The option type excludes `window`; this catches untyped callers. (So
+    // the inherited expandWindowFold always returns false.)
+    assertNotWindowed(options, 'UnresolvedFile');
 
     if (
       options.onMergeConflictAction != null &&
@@ -381,6 +387,7 @@ export class UnresolvedFile<LAnnotation = undefined> extends FileDiff<
   }
 
   override hydrate(props: UnresolvedFileHydrationProps<LAnnotation>): void {
+    assertNotWindowed(this.options, 'UnresolvedFile');
     const {
       file,
       fileDiff,
@@ -435,6 +442,7 @@ export class UnresolvedFile<LAnnotation = undefined> extends FileDiff<
   }
 
   override render(props: UnresolvedFileRenderProps<LAnnotation> = {}): boolean {
+    assertNotWindowed(this.options, 'UnresolvedFile');
     const {
       file,
       fileDiff,

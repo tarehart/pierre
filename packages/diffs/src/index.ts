@@ -109,6 +109,7 @@ export * from './utils/setWrapperNodeProps';
 export * from './utils/tokenStyle';
 export * from './utils/tokensToHtml';
 export * from './utils/trimPatchContext';
+export type { DiffWindow, WindowFold } from './utils/windowingCore';
 
 export type * from './highlighter/themes/types';
 export type * from './types';

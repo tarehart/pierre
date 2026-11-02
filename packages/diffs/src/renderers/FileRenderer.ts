@@ -32,10 +32,12 @@ import { areFileRenderOptionsEqual } from '../utils/areFileRenderOptionsEqual';
 import { areFileTargetsEqual } from '../utils/areFileTargetsEqual';
 import { areRenderRangesEqual } from '../utils/areRenderRangesEqual';
 import { linesFromFileContents } from '../utils/computeFileOffsets';
+import { computeWindowedFileRows } from '../utils/computeWindowedFileRows';
 import { createAnnotationElement } from '../utils/createAnnotationElement';
 import { createContentColumn } from '../utils/createContentColumn';
 import { createFileHeaderElement } from '../utils/createFileHeaderElement';
 import { createPreElement } from '../utils/createPreElement';
+import { createSeparator } from '../utils/createSeparator';
 import { getFiletypeFromFileName } from '../utils/getFiletypeFromFileName';
 import { getHighlighterOptions } from '../utils/getHighlighterOptions';
 import { getLineAnnotationName } from '../utils/getLineAnnotationName';
@@ -56,6 +58,12 @@ import { isDefaultRenderRange } from '../utils/isDefaultRenderRange';
 import { isFilePlainText } from '../utils/isFilePlainText';
 import { renderFileWithHighlighter } from '../utils/renderFileWithHighlighter';
 import { resolvePreferredHighlighter } from '../utils/resolvePreferredHighlighter';
+import {
+  type DiffWindow,
+  toWindowFold,
+  type WindowFold,
+  type WindowReveal,
+} from '../utils/windowingCore';
 import type { WorkerPoolManager } from '../worker';
 
 type AnnotationLineMap<LAnnotation> = Record<
@@ -113,6 +121,16 @@ export interface FileRendererOptions extends BaseCodeOptions {
   headerRenderMode?: FileHeaderRenderMode;
 }
 
+/** @internal Windowing plumbing for File; not public API. */
+export interface FileWindowRenderState {
+  window: DiffWindow;
+  reveal: WindowReveal;
+  /** When true, separators render as empty `custom` slots the host fills. */
+  hasSeparatorRenderer: boolean;
+  /** Lines one click reveals; a larger fold also offers "Expand all". */
+  expansionLineCount: number;
+}
+
 let instanceId = -1;
 
 export class FileRenderer<LAnnotation = undefined> {
@@ -152,6 +170,10 @@ export class FileRenderer<LAnnotation = undefined> {
     return this.renderCache?.file;
   }
 
+  private windowState: FileWindowRenderState | null = null;
+  // The latest windowed render's folds, indexed by `data-expand-index`.
+  private windowFolds: WindowFold[] = [];
+
   constructor(
     public options: FileRendererOptions = { theme: DEFAULT_THEMES },
     private annotationSlotName: (
@@ -163,6 +185,28 @@ export class FileRenderer<LAnnotation = undefined> {
 
   public setOptions(options: FileRendererOptions): void {
     this.options = options;
+  }
+
+  /** @internal Windowing plumbing for File; not public API. */
+  public setWindowState(state: FileWindowRenderState | null): void {
+    // Folds belong to the window they were laid out for; a new range has
+    // none until it renders.
+    if (
+      state == null ||
+      state.window.start !== this.windowState?.window.start ||
+      state.window.end !== this.windowState?.window.end
+    ) {
+      this.windowFolds = [];
+    }
+    this.windowState = state;
+  }
+
+  /**
+   * The latest windowed render's folds, indexed by `data-expand-index`.
+   * @internal Windowing plumbing for File; not public API.
+   */
+  public getWindowFolds(): readonly WindowFold[] {
+    return this.windowFolds;
   }
 
   public mergeOptions(options: Partial<FileRendererOptions>): void {
@@ -965,11 +1009,7 @@ export class FileRenderer<LAnnotation = undefined> {
       rowCount++;
     }
 
-    for (
-      let lineIndex = renderRange.startingLine;
-      lineIndex < endLine;
-      lineIndex++
-    ) {
+    const pushLine = (lineIndex: number) => {
       const lineNumber = lineIndex + 1;
 
       // Sparse array - directly indexed by lineIndex
@@ -1006,6 +1046,67 @@ export class FileRenderer<LAnnotation = undefined> {
           })
         );
         rowCount++;
+      }
+    };
+
+    this.windowFolds = [];
+    if (this.windowState != null) {
+      // Windowed rows address absolute (1-based) line numbers. Each fold is
+      // one separator row; its index in `windowFolds` is its expand index.
+      const { window, reveal, hasSeparatorRenderer, expansionLineCount } =
+        this.windowState;
+      const windowed = computeWindowedFileRows({
+        lines: this.getOrCreateLineCache(file),
+        window,
+        reveal,
+      });
+      for (const row of windowed.rows) {
+        if (row.kind === 'line') {
+          pushLine(row.lineNumber - 1);
+          continue;
+        }
+        const expandIndex = this.windowFolds.length;
+        this.windowFolds.push(toWindowFold(row));
+        const isFirstHunk = row.boundary === 'above';
+        const isLastHunk = row.boundary === 'below';
+        if (hasSeparatorRenderer) {
+          // The host's element is slotted into the content column only (a
+          // slotted element is assigned to one slot), so the gutter gets an
+          // aligned empty cell.
+          gutter.children.push(createGutterGap('context', 'metadata', 1));
+          contentArray.push(
+            createSeparator({
+              type: 'custom',
+              expandIndex,
+              isFirstHunk,
+              isLastHunk,
+              slotName: `window-file-sep-${expandIndex}`,
+              isWindowedFold: true,
+            })
+          );
+        } else {
+          // Same separator in both columns, as DiffHunksRenderer does: CSS
+          // shows the gutter's copy and hides the content column's.
+          const props = {
+            type: 'line-info' as const,
+            content: `${row.collapsedLines} hidden line${row.collapsedLines === 1 ? '' : 's'}`,
+            expandIndex,
+            chunked: row.collapsedLines > expansionLineCount,
+            isFirstHunk,
+            isLastHunk,
+          };
+          gutter.children.push(createSeparator(props));
+          contentArray.push(createSeparator(props));
+        }
+        rowCount++;
+      }
+    } else {
+      for (
+        let lineIndex = renderRange.startingLine;
+        lineIndex < endLine;
+        lineIndex++
+      ) {
+        pushLine(lineIndex);
       }
     }
 

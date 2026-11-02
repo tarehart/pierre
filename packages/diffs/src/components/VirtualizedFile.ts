@@ -14,6 +14,7 @@ import type {
 import { areFileTargetsEqual } from '../utils/areFileTargetsEqual';
 import { areObjectsEqual } from '../utils/areObjectsEqual';
 import { areOptionsEqual } from '../utils/areOptionsEqual';
+import { assertNotWindowed } from '../utils/assertNotWindowed';
 import {
   computeVirtualFileMetrics,
   getVirtualFileHeaderHeight,
@@ -99,6 +100,8 @@ export class VirtualizedFile<
   // so layout can use the newly available content. CodeView updates it during
   // its layout pass.
   private pendingRender: PendingRender | undefined;
+  // Narrowed from the base class: virtualized hosts cannot fold a window.
+  declare public options: FileOptions<LAnnotation, Caret>;
   private isVisible: boolean = false;
   private isSetup: boolean = false;
   private layoutDirty = true;
@@ -111,6 +114,7 @@ export class VirtualizedFile<
     workerManager?: WorkerPoolManager,
     requestOwnerRender?: () => void
   ) {
+    assertNotWindowed(options, 'VirtualizedFile');
     super(options, workerManager, requestOwnerRender);
   }
 
@@ -204,6 +208,7 @@ export class VirtualizedFile<
     }
 
     if (options == null) return;
+    assertNotWindowed(options, 'VirtualizedFile');
     const { options: previousOptions } = this;
     const optionsChanged = !areOptionsEqual(previousOptions, options);
     const layoutChanged = hasFileLayoutOptionChanged(previousOptions, options);
@@ -881,6 +886,8 @@ export class VirtualizedFile<
     lineAnnotations,
     ...props
   }: FileRenderProps<LAnnotation>): boolean {
+    // Also covers an options object assigned directly, which skips setOptions.
+    assertNotWindowed(this.options, 'VirtualizedFile');
     const didFileChange = !areFileTargetsEqual(this.getInputFile(), file);
     if (didFileChange) {
       this.updateInputFile(file, lineAnnotations);

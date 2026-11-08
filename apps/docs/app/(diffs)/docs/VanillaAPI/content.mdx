@@ -133,6 +133,37 @@ elements:
 
 <DocsCodeExample {...customHunk} />
 
+#### Snippets
+
+<Notice variant="warning" icon={<IconCiWarningFill />}>
+  `SnippetFileDiff` and `SnippetFile` are experimental and may change in a minor
+  release.
+</Notice>
+
+`SnippetFileDiff` and `SnippetFile` are read-only subclasses of `FileDiff` and
+`File` that show only `lineRange`. See
+[React API → Snippets](#react-api-snippets) for the behavior; the vanilla
+classes add the imperative methods:
+
+```ts
+import { SnippetFileDiff } from '@pierre/diffs';
+
+const snippet = new SnippetFileDiff({
+  lineRange: { start: 40, end: 70 },
+  hunkSeparators: 'line-info-basic', // or 'line-info' (default)
+});
+snippet.render({ fileDiff, containerWrapper });
+
+snippet.expandSnippet('above', 20); // false when no fold is left there
+snippet.expandSnippet('below', Infinity); // open the whole fold
+snippet.revealLine(12); // open the fold hiding new-file line 12
+```
+
+`expandSnippet` and `revealLine` open folds in place and do not call
+`onSnippetExpand`. Hunk indexes do not address a snippet's folds, so
+`expandHunk` throws; `hunkSeparators` accepts only `'line-info'` and
+`'line-info-basic'`, and `expandUnchanged` is rejected.
+
 ### Renderers
 
 <Notice icon={<IconInfoFill />}>

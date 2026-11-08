@@ -1,4 +1,5 @@
 import type { FileDiffOptions } from '../components/FileDiff';
+import type { SnippetFileDiffOptions } from '../components/SnippetFileDiff';
 import {
   getUnresolvedDiffHunksRendererOptions,
   type UnresolvedFileOptions,
@@ -8,6 +9,10 @@ import {
   type DiffHunksRendererOptions,
   type HunksRenderResult,
 } from '../renderers/DiffHunksRenderer';
+import {
+  SnippetDiffHunksRenderer,
+  type SnippetDiffHunksRendererOptions,
+} from '../renderers/SnippetDiffHunksRenderer';
 import { UnresolvedFileHunksRenderer } from '../renderers/UnresolvedFileHunksRenderer';
 import type {
   DiffFileInput,
@@ -26,6 +31,10 @@ import { getSingularPatch } from '../utils/getSingularPatch';
 import { parseDiffFromFile } from '../utils/parseDiffFromFile';
 import { parseMergeConflictDiffFromFile } from '../utils/parseMergeConflictDiffFromFile';
 import { shouldUseTokenTransformer } from '../utils/shouldUseTokenTransformer';
+import {
+  assertCompleteDiff,
+  assertSnippetDiffOptions,
+} from '../utils/snippetLayout';
 import { renderHTML } from './renderHTML';
 
 interface PreloadDiffBaseOptions<LAnnotation, Caret> {
@@ -255,6 +264,65 @@ export async function preloadPatchDiff<
       annotations,
     }),
   };
+}
+
+/**
+ * Experimental: this API may change in a minor release.
+ * @experimental
+ */
+export interface PreloadSnippetFileDiffOptions<LAnnotation> {
+  fileDiff: FileDiffMetadata;
+  options: SnippetFileDiffOptions<LAnnotation>;
+  annotations?: DiffLineAnnotation<LAnnotation>[];
+}
+
+/**
+ * Experimental: this API may change in a minor release.
+ * @experimental
+ */
+export interface PreloadSnippetFileDiffResult<
+  LAnnotation,
+> extends PreloadSnippetFileDiffOptions<LAnnotation> {
+  prerenderedHTML: string;
+}
+
+/**
+ * Server-renders a SnippetFileDiff. Pass the result to the React
+ * `SnippetFileDiff` (or `hydrate`) with the same options so hydration keeps
+ * the markup. Rejects a partial diff or invalid options before rendering.
+ *
+ * Experimental: this API may change in a minor release.
+ * @experimental
+ */
+export async function preloadSnippetFileDiff<LAnnotation = undefined>({
+  fileDiff,
+  options,
+  annotations,
+}: PreloadSnippetFileDiffOptions<LAnnotation>): Promise<
+  PreloadSnippetFileDiffResult<LAnnotation>
+> {
+  assertSnippetDiffOptions('preloadSnippetFileDiff', options);
+  assertCompleteDiff('preloadSnippetFileDiff', fileDiff);
+  const rendererOptions: SnippetDiffHunksRendererOptions = {
+    ...getHunksRendererOptions(
+      options as FileDiffOptions<LAnnotation, undefined>
+    ),
+    lineRange: options.lineRange,
+    contextLines: options.contextLines,
+  };
+  const renderer = new SnippetDiffHunksRenderer<LAnnotation>(rendererOptions);
+  if (annotations != null && annotations.length > 0) {
+    renderer.setLineAnnotations(annotations);
+  }
+  const prerenderedHTML = renderHTML(
+    processHunkResult(
+      await renderer.asyncRender(fileDiff),
+      renderer,
+      options.unsafeCSS,
+      options.themeType ?? 'system'
+    )
+  );
+  return { fileDiff, options, annotations, prerenderedHTML };
 }
 
 function processHunkResult<LAnnotation>(

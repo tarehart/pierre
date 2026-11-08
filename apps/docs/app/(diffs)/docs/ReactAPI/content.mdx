@@ -60,6 +60,55 @@ The `CodeView` tab above is the quick-start version. For the full guide on
 controlled `items`, imperative `initialItems`, ids, `version`, selection, and
 `scrollTo`, see [CodeView](#codeview).
 
+### Snippets
+
+<Notice variant="warning" icon={<IconCiWarningFill />}>
+  `SnippetFileDiff`, `SnippetFile` and their SSR preload functions are
+  experimental and may change in a minor release.
+</Notice>
+
+`SnippetFileDiff` and `SnippetFile` show only a line range of a complete diff or
+file. Everything outside `options.lineRange` folds into an above and a below
+fold that open in place when clicked; inside the range, long unchanged runs
+between changes fold down to `contextLines` (default 3). They are read-only and
+cannot render inside a `Virtualizer` (they throw there).
+
+```tsx
+import { parseDiffFromFile } from '@pierre/diffs';
+import { SnippetFileDiff } from '@pierre/diffs/react';
+
+const fileDiff = parseDiffFromFile(oldFile, newFile);
+const options = {
+  lineRange: { start: 40, end: 70 },
+  // Telemetry: return nothing so the fold still opens.
+  onSnippetExpand(fold, lineCount) {
+    track('snippet-expand', fold.boundary, lineCount);
+  },
+};
+
+<SnippetFileDiff fileDiff={fileDiff} options={options} />;
+```
+
+- `lineRange` addresses new-file lines (old-file lines for a deleted file). A
+  modification (removed and added lines together) cut by the range edge is shown
+  whole, and changing `lineRange` lays the snippet out afresh.
+- Fold counts, `onSnippetExpand`'s `lineCount` and `expandSnippet`'s `lineCount`
+  are all source lines, so unified and split agree.
+- `onSnippetExpand(fold, lineCount)` fires only for the above and below folds.
+  Return `true` to handle the click yourself and keep the fold closed.
+- To drive the snippet from your own markup, keep the instance from
+  `onPostRender` and call
+  `instance.expandSnippet('above' | 'below', lineCount?)`; see
+  [Snippet folds](#hunk-separators-snippet-folds) to hide the built-in edge
+  separators.
+- The diff must be complete: a partial diff parsed from a patch throws.
+- `preloadSnippetFileDiff` and `preloadSnippetFile` from `@pierre/diffs/ssr`
+  produce `prerenderedHTML` that these components hydrate without re-rendering.
+- The whole diff is highlighted once; each expansion re-lays out the snippet's
+  rows, which costs time proportional to the file's length, not the snippet's.
+  Memoize `fileDiff` (or give it a `cacheKey`) so re-renders skip that work; an
+  equal diff passed as a new object still keeps the reader's open folds.
+
 ### Partial Diff Hydration
 
 When `loadDiffFiles` is configured, partial `FileDiffMetadata` passed to

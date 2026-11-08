@@ -290,7 +290,7 @@ export class File<LAnnotation = undefined, Caret = undefined> {
     // call it, and the owner must call render().
     private requestOwnerRender?: () => void
   ) {
-    this.fileRenderer = new FileRenderer<LAnnotation>(
+    this.fileRenderer = this.createFileRenderer(
       options,
       this.getAnnotationSlotName,
       this.handleHighlightRender,
@@ -302,6 +302,27 @@ export class File<LAnnotation = undefined, Caret = undefined> {
       pluckInteractionOptions(options)
     );
     this.workerManager?.subscribeToThemeChanges(this);
+  }
+
+  /**
+   * Builds the renderer this component draws with. Subclasses that render a
+   * different row set (snippets) return a FileRenderer subclass.
+   *
+   * Experimental: this API may change in a minor release.
+   * @experimental
+   */
+  protected createFileRenderer(
+    options: FileOptions<LAnnotation, Caret>,
+    annotationSlotName: (annotation: LineAnnotation<LAnnotation>) => string,
+    onRenderUpdate: () => unknown,
+    workerManager: WorkerPoolManager | undefined
+  ): FileRenderer<LAnnotation> {
+    return new FileRenderer<LAnnotation>(
+      options,
+      annotationSlotName,
+      onRenderUpdate,
+      workerManager
+    );
   }
 
   public getAnnotationSlotName = (

@@ -35,6 +35,27 @@ tweaks it with CSS.
   controls.
 - `simple`: Minimal separator bar.
 
+### Snippet Folds
+
+<Notice variant="warning" icon={<IconCiWarningFill />}>
+  Snippets and the `data-snippet-boundary` attribute are experimental and may
+  change in a minor release.
+</Notice>
+
+`SnippetFileDiff` and `SnippetFile` draw their folds with the same `line-info`
+or `line-info-basic` markup. The folds above and below the line range also carry
+`data-snippet-boundary="above"` or `"below"` on every separator element, so you
+can hide them and render your own edge markup outside the component (calling
+`expandSnippet`). Hidden separators leave no gap; folds inside the range keep
+theirs.
+
+```ts
+const options = {
+  lineRange: { start: 40, end: 70 },
+  unsafeCSS: '[data-snippet-boundary] { display: none; }',
+};
+```
+
 ### Custom CSS Example
 
 <DocsCodeExample {...customHunkSeparatorsSwitcher} />

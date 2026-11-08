@@ -58,6 +58,7 @@ import {
   remapExpandedHunksForRegionChange,
   type SessionRegionChange,
 } from '../utils/editSessionHunks';
+import { DEFAULT_EXPANSION_LINE_COUNT } from '../utils/expansionLineCount';
 import { getFiletypeFromFileName } from '../utils/getFiletypeFromFileName';
 import { getHighlighterOptions } from '../utils/getHighlighterOptions';
 import { getHunkSeparatorSlotName } from '../utils/getHunkSeparatorSlotName';
@@ -78,7 +79,10 @@ import {
 } from '../utils/includesFileAnnotations';
 import { isDefaultRenderRange } from '../utils/isDefaultRenderRange';
 import { isDiffPlainText } from '../utils/isDiffPlainText';
-import type { DiffLineMetadata } from '../utils/iterateOverDiff';
+import type {
+  DiffLineMetadata,
+  IterateOverDiffProps,
+} from '../utils/iterateOverDiff';
 import { iterateOverDiff } from '../utils/iterateOverDiff';
 import { renderDiffWithHighlighter } from '../utils/renderDiffWithHighlighter';
 import { resolvePreferredHighlighter } from '../utils/resolvePreferredHighlighter';
@@ -909,6 +913,18 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
     return createDefaultAnnotationElement(span);
   };
 
+  /**
+   * Walks the diff rows a render draws, in order. Subclasses that decide
+   * which rows render on their own (snippets) replace the walk; the rows they
+   * emit keep iterateOverDiff's shape and meaning.
+   *
+   * Experimental: this API may change in a minor release.
+   * @experimental
+   */
+  protected iterateDiff(props: IterateOverDiffProps): void {
+    iterateOverDiff(props);
+  }
+
   // Unified hook returns extra rows that render before/after the current line.
   declare protected getUnifiedInjectedRowsForLine?: (
     ctx: RenderedLineContext
@@ -930,7 +946,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
       collapsed = false,
       expandUnchanged = false,
       collapsedContextThreshold = DEFAULT_COLLAPSED_CONTEXT_THRESHOLD,
-      expansionLineCount = 100,
+      expansionLineCount = DEFAULT_EXPANSION_LINE_COUNT,
       hunkSeparators = 'line-info',
       lineDiffType = 'word-alt',
       maxLineDiffLength = 1000,
@@ -1650,7 +1666,7 @@ export class DiffHunksRenderer<LAnnotation = undefined> {
 
     this.pushFileLevelAnnotations(fileDiff, diffStyle, renderRange, context);
 
-    iterateOverDiff({
+    this.iterateDiff({
       diff: fileDiff,
       diffStyle,
       startingLine: renderRange.startingLine,

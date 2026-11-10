@@ -189,7 +189,9 @@ export interface ChangeContent {
 export interface Hunk {
   /**
    * Number of unchanged lines between the previous hunk (or file start) and
-   * this hunk.
+   * this hunk. On the first hunk it may be less than the lines above it: the
+   * view then begins that many lines above the hunk on both sides, and the
+   * lines above that are no part of it (see `FileDiffMetadata.collapsedAfter`).
    */
   collapsedBefore: number;
 
@@ -381,6 +383,16 @@ export interface FileDiffMetadata {
    * @internal
    */
   editSessionDirty?: boolean;
+  /**
+   * Unchanged lines after the last hunk that the view may show or expand,
+   * paired from the end of the last hunk on both sides. When unset, it is
+   * the rest of the files, which must then be the same length on both
+   * sides. Set it (0 or more) when the metadata describes only part of the
+   * diff, such as a window over some lines, so that lines beyond it, changed
+   * or not, are no part of the view. `hunks[0].collapsedBefore` does the same
+   * above the first hunk.
+   */
+  collapsedAfter?: number;
   /**
    * This unique key is only used for Worker Pools to avoid subsequent requests
    * to highlight if we've already highlighted the diff.  Please note that if

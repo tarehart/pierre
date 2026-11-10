@@ -116,6 +116,29 @@ export function getExpandedRegion({
   };
 }
 
+// Lines after the last hunk on each side that the view covers: the rest of
+// each file, or the `collapsedAfter` the metadata declares (the same count on
+// both sides, since those lines pair up as context).
+function getTrailingRemaining(
+  fileDiff: FileDiffMetadata,
+  lastHunk: FileDiffMetadata['hunks'][number]
+): { additionRemaining: number; deletionRemaining: number } {
+  const additionRemaining =
+    fileDiff.additionLines.length -
+    getHunkSideEndBoundary(lastHunk.additionStart, lastHunk.additionCount);
+  const deletionRemaining =
+    fileDiff.deletionLines.length -
+    getHunkSideEndBoundary(lastHunk.deletionStart, lastHunk.deletionCount);
+  if (fileDiff.collapsedAfter == null) {
+    return { additionRemaining, deletionRemaining };
+  }
+  const declared = Math.max(
+    Math.min(fileDiff.collapsedAfter, additionRemaining, deletionRemaining),
+    0
+  );
+  return { additionRemaining: declared, deletionRemaining: declared };
+}
+
 export function hasTrailingContext(fileDiff: FileDiffMetadata): boolean {
   const lastHunk = fileDiff.hunks[fileDiff.hunks.length - 1];
   if (
@@ -127,12 +150,10 @@ export function hasTrailingContext(fileDiff: FileDiffMetadata): boolean {
     return false;
   }
 
-  const additionRemaining =
-    fileDiff.additionLines.length -
-    getHunkSideEndBoundary(lastHunk.additionStart, lastHunk.additionCount);
-  const deletionRemaining =
-    fileDiff.deletionLines.length -
-    getHunkSideEndBoundary(lastHunk.deletionStart, lastHunk.deletionCount);
+  const { additionRemaining, deletionRemaining } = getTrailingRemaining(
+    fileDiff,
+    lastHunk
+  );
 
   return additionRemaining > 0 || deletionRemaining > 0;
 }
@@ -151,12 +172,10 @@ export function hasTrailingContextMismatch(
     return false;
   }
 
-  const additionRemaining =
-    fileDiff.additionLines.length -
-    getHunkSideEndBoundary(lastHunk.additionStart, lastHunk.additionCount);
-  const deletionRemaining =
-    fileDiff.deletionLines.length -
-    getHunkSideEndBoundary(lastHunk.deletionStart, lastHunk.deletionCount);
+  const { additionRemaining, deletionRemaining } = getTrailingRemaining(
+    fileDiff,
+    lastHunk
+  );
 
   if (additionRemaining <= 0 && deletionRemaining <= 0) {
     return false;
@@ -181,12 +200,10 @@ export function getTrailingContextRangeSize({
     return 0;
   }
 
-  const additionRemaining =
-    fileDiff.additionLines.length -
-    getHunkSideEndBoundary(lastHunk.additionStart, lastHunk.additionCount);
-  const deletionRemaining =
-    fileDiff.deletionLines.length -
-    getHunkSideEndBoundary(lastHunk.deletionStart, lastHunk.deletionCount);
+  const { additionRemaining, deletionRemaining } = getTrailingRemaining(
+    fileDiff,
+    lastHunk
+  );
 
   if (additionRemaining <= 0 && deletionRemaining <= 0) {
     return 0;

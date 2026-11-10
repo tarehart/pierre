@@ -109,13 +109,7 @@ export function renderDiffWithHighlighter(
           : deletionLine.splitLineIndex;
 
       if (deletionLine != null) {
-        appendContent(
-          diff.deletionLines[deletionLine.lineIndex],
-          deletionLine.lineIndex,
-          bucket.deletionSegments,
-          bucket.deletionContent
-        );
-        bucket.deletionInfo.push({
+        const info: LineInfo = {
           type: type === 'change' ? 'change-deletion' : type,
           lineNumber: deletionLine.lineNumber,
           altLineNumber:
@@ -123,17 +117,22 @@ export function renderDiffWithHighlighter(
               ? undefined
               : (additionLine.lineNumber ?? undefined),
           lineIndex: `${deletionLine.unifiedLineIndex},${splitLineIndex}`,
-        });
+        };
+        if (shouldGroupAll) {
+          bucket.deletionInfo[deletionLine.lineIndex] = info;
+        } else {
+          appendContent(
+            diff.deletionLines[deletionLine.lineIndex],
+            deletionLine.lineIndex,
+            bucket.deletionSegments,
+            bucket.deletionContent
+          );
+          bucket.deletionInfo.push(info);
+        }
       }
 
       if (additionLine != null) {
-        appendContent(
-          diff.additionLines[additionLine.lineIndex],
-          additionLine.lineIndex,
-          bucket.additionSegments,
-          bucket.additionContent
-        );
-        bucket.additionInfo.push({
+        const info: LineInfo = {
           type: type === 'change' ? 'change-addition' : type,
           lineNumber: additionLine.lineNumber,
           altLineNumber:
@@ -141,10 +140,41 @@ export function renderDiffWithHighlighter(
               ? undefined
               : (deletionLine.lineNumber ?? undefined),
           lineIndex: `${additionLine.unifiedLineIndex},${splitLineIndex}`,
-        });
+        };
+        if (shouldGroupAll) {
+          bucket.additionInfo[additionLine.lineIndex] = info;
+        } else {
+          appendContent(
+            diff.additionLines[additionLine.lineIndex],
+            additionLine.lineIndex,
+            bucket.additionSegments,
+            bucket.additionContent
+          );
+          bucket.additionInfo.push(info);
+        }
       }
     },
   });
+
+  // A whole-file diff is tokenized as its two whole files, indexed by file
+  // line, so a line's tokens never depend on which lines the hunks reach: a
+  // first hunk whose collapsedBefore stops short of line 1, or a
+  // collapsedAfter short of the end, still gets the lexical state of the
+  // lines above it. For a diff whose hunks reach every line this is the same
+  // text in the same order as before.
+  const wholeFileBucket = shouldGroupAll ? buckets.get(0) : undefined;
+  if (wholeFileBucket != null) {
+    fillWholeFile(
+      diff.deletionLines,
+      wholeFileBucket.deletionContent,
+      wholeFileBucket.deletionInfo
+    );
+    fillWholeFile(
+      diff.additionLines,
+      wholeFileBucket.additionContent,
+      wholeFileBucket.additionInfo
+    );
+  }
 
   for (const bucket of buckets.values()) {
     if (
@@ -204,6 +234,22 @@ export function renderDiffWithHighlighter(
   }
 
   return { code, themeStyles, baseThemeType };
+}
+
+// Lines outside the view get context info; they are tokenized, never shown.
+function fillWholeFile(
+  lines: string[],
+  content: FakeArrayType,
+  info: (LineInfo | undefined)[]
+): void {
+  for (let index = 0; index < lines.length; index++) {
+    content.push(lines[index]);
+    info[index] ??= {
+      type: 'context',
+      lineNumber: index + 1,
+      lineIndex: index,
+    };
+  }
 }
 
 interface HighlightSegment {
